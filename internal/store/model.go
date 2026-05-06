@@ -38,7 +38,7 @@ type ScheduleStore interface {
 	UpdateContextData(ctx context.Context, traceID string, data JSONMap) error
 	UpdateOutputs(ctx context.Context, traceID string, data JSONMap) error
 	MarkPoll(ctx context.Context, traceID string, invokeCount int, nextRunAt time.Time) error
-	MarkSuccess(ctx context.Context, traceID string) error
-	MarkFail(ctx context.Context, traceID string, message string) error
+	MarkSuccess(ctx context.Context, traceID string, invokeCount int) error
+	MarkFail(ctx context.Context, traceID string, invokeCount int, message string) error
 	ClaimDue(ctx context.Context, now time.Time, workerID string, limit int, lockFor time.Duration) ([]Schedule, error)
 }

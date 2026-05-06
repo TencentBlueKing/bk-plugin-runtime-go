@@ -62,10 +62,11 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		return err
 	}
 	for _, item := range items {
+		invokeCount := item.InvokeCount + 1
 		reader := runtimeadapter.Reader{Inputs: item.Inputs, ContextInputs: item.ContextInputs}
-		rt := runtimeadapter.NewExecuteRuntime(ctx, w.cfg.Store)
+		rt := runtimeadapter.NewExecuteRuntime(ctx, w.cfg.Store, invokeCount)
 		logger := w.cfg.Logger.WithField("trace_id", item.TraceID).WithField("plugin_version", item.PluginVersion)
-		if err := executor.Schedule(item.TraceID, item.PluginVersion, item.InvokeCount+1, reader, rt, logger); err != nil {
+		if err := executor.Schedule(item.TraceID, item.PluginVersion, invokeCount, reader, rt, logger); err != nil {
 			logger.WithError(err).Error("schedule plugin")
 		}
 	}

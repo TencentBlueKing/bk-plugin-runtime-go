@@ -83,16 +83,16 @@ func (h Handler) Invoke(c *gin.Context) {
 	}
 
 	reader := runtimeadapter.Reader{Inputs: req.Inputs, ContextInputs: req.Context}
-	rt := runtimeadapter.NewExecuteRuntime(c.Request.Context(), h.store)
+	rt := runtimeadapter.NewExecuteRuntime(c.Request.Context(), h.store, 1)
 	logger := h.logger.WithField("trace_id", traceID)
 	state, err := executor.Execute(traceID, versionCode, reader, rt, logger)
 	if err != nil {
-		_ = h.store.MarkFail(c.Request.Context(), traceID, err.Error())
+		_ = h.store.MarkFail(c.Request.Context(), traceID, 1, err.Error())
 		httpx.OK(c, gin.H{"trace_id": traceID, "state": constants.StateFail})
 		return
 	}
 	if state == constants.StateSuccess {
-		_ = h.store.MarkSuccess(c.Request.Context(), traceID)
+		_ = h.store.MarkSuccess(c.Request.Context(), traceID, 1)
 	}
 	saved, err := h.store.Get(c.Request.Context(), traceID)
 	if err != nil {

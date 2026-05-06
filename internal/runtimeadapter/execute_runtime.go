@@ -9,12 +9,13 @@ import (
 )
 
 type ExecuteRuntime struct {
-	ctx   context.Context
-	store store.ScheduleStore
+	ctx         context.Context
+	store       store.ScheduleStore
+	invokeCount int
 }
 
-func NewExecuteRuntime(ctx context.Context, scheduleStore store.ScheduleStore) *ExecuteRuntime {
-	return &ExecuteRuntime{ctx: ctx, store: scheduleStore}
+func NewExecuteRuntime(ctx context.Context, scheduleStore store.ScheduleStore, invokeCount int) *ExecuteRuntime {
+	return &ExecuteRuntime{ctx: ctx, store: scheduleStore, invokeCount: invokeCount}
 }
 
 func (r *ExecuteRuntime) GetOutputsStore() runtime.ObjectStore {
@@ -30,9 +31,9 @@ func (r *ExecuteRuntime) SetPoll(traceID string, version string, invokeCount int
 }
 
 func (r *ExecuteRuntime) SetFail(traceID string, err error) error {
-	return r.store.MarkFail(r.ctx, traceID, err.Error())
+	return r.store.MarkFail(r.ctx, traceID, r.invokeCount, err.Error())
 }
 
 func (r *ExecuteRuntime) SetSuccess(traceID string) error {
-	return r.store.MarkSuccess(r.ctx, traceID)
+	return r.store.MarkSuccess(r.ctx, traceID, r.invokeCount)
 }

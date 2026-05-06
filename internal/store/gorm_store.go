@@ -63,20 +63,22 @@ func (s *GormStore) MarkPoll(ctx context.Context, traceID string, invokeCount in
 	}).Error
 }
 
-func (s *GormStore) MarkSuccess(ctx context.Context, traceID string) error {
+func (s *GormStore) MarkSuccess(ctx context.Context, traceID string, invokeCount int) error {
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Model(&Schedule{}).Where("trace_id = ?", traceID).Updates(map[string]interface{}{
 		"state":        constants.StateSuccess,
+		"invoke_count": invokeCount,
 		"finished_at":  &now,
 		"locked_by":    "",
 		"locked_until": nil,
 	}).Error
 }
 
-func (s *GormStore) MarkFail(ctx context.Context, traceID string, message string) error {
+func (s *GormStore) MarkFail(ctx context.Context, traceID string, invokeCount int, message string) error {
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Model(&Schedule{}).Where("trace_id = ?", traceID).Updates(map[string]interface{}{
 		"state":         constants.StateFail,
+		"invoke_count":  invokeCount,
 		"error_code":    "PLUGIN_EXECUTE_ERROR",
 		"error_message": message,
 		"finished_at":   &now,
@@ -104,6 +106,9 @@ func (s *GormStore) ClaimDue(ctx context.Context, now time.Time, workerID string
 	for _, item := range candidates {
 		result := s.db.WithContext(ctx).Model(&Schedule{}).
 			Where("trace_id = ?", item.TraceID).
+			Where("state = ?", constants.StatePoll).
+			Where("finished_at IS NULL").
+			Where("next_run_at <= ?", now).
 			Where("locked_until IS NULL OR locked_until < ?", now).
 			Updates(map[string]interface{}{"locked_by": workerID, "locked_until": &lockUntil})
 		if result.Error != nil {
