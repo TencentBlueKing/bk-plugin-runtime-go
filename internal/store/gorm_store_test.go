@@ -61,6 +61,20 @@ func TestGormStoreClaimDueSkipsLockedRows(t *testing.T) {
 	require.Empty(t, claimedAgain)
 }
 
+func TestGormStoreMarkSuccessPersistsInvokeCount(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "success", PluginVersion: "1.0.0", State: constants.StatePoll, InvokeCount: 1, NextRunAt: now.Add(-time.Second)}))
+	require.NoError(t, s.MarkSuccess(ctx, "success", 2))
+
+	got, err := s.Get(ctx, "success")
+	require.NoError(t, err)
+	require.Equal(t, constants.StateSuccess, got.State)
+	require.Equal(t, 2, got.InvokeCount)
+}
+
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }
