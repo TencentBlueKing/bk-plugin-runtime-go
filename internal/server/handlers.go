@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,6 +12,7 @@ import (
 	"github.com/TencentBlueKing/bk-plugin-framework-go/constants"
 	"github.com/TencentBlueKing/bk-plugin-framework-go/executor"
 	"github.com/TencentBlueKing/bk-plugin-framework-go/hub"
+	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/callback"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/httpx"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/runtimeadapter"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/store"
@@ -99,7 +101,7 @@ func (h Handler) Invoke(c *gin.Context) {
 		httpx.Error(c, http.StatusInternalServerError, 50000, err.Error())
 		return
 	}
-	httpx.OK(c, gin.H{"trace_id": traceID, "state": saved.State, "outputs": saved.Outputs})
+	httpx.OK(c, gin.H{"trace_id": traceID, "state": saved.State, "outputs": saved.Outputs, "callback_url": saved.CallbackURL})
 }
 
 func (h Handler) Schedule(c *gin.Context) {
@@ -118,4 +120,24 @@ func (h Handler) Schedule(c *gin.Context) {
 			"message": schedule.ErrorMessage,
 		},
 	})
+}
+
+func (h Handler) Callback(c *gin.Context) {
+	token := c.Param("token")
+	manager := callback.NewTokenManager(os.Getenv("BK_PLUGIN_CALLBACK_TOKEN_SECRET"))
+	traceID, err := manager.Verify(token)
+	if err != nil {
+		httpx.Error(c, http.StatusUnauthorized, 40100, err.Error())
+		return
+	}
+	var payload store.JSONMap
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		httpx.Error(c, http.StatusBadRequest, 40000, err.Error())
+		return
+	}
+	if err := h.store.ReceiveCallback(c.Request.Context(), traceID, callback.Hash(token), payload, time.Now().UTC()); err != nil {
+		httpx.Error(c, http.StatusNotFound, 40404, err.Error())
+		return
+	}
+	httpx.OK(c, gin.H{"trace_id": traceID, "state": constants.StateCallback})
 }
