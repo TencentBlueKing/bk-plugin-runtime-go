@@ -8,35 +8,35 @@ import (
 )
 
 type Schedule struct {
-	ID            uint            `gorm:"primaryKey"`
-	TraceID       string          `gorm:"size:64;uniqueIndex;not null"`
-	PluginVersion string          `gorm:"size:32;index;not null"`
-	State         constants.State `gorm:"index;not null"`
-	InvokeCount   int             `gorm:"not null"`
-	Inputs        JSONMap         `gorm:"type:json"`
-	ContextInputs JSONMap         `gorm:"type:json"`
-	ContextData   JSONMap         `gorm:"type:json"`
-	Outputs       JSONMap         `gorm:"type:json"`
-	CallbackData       JSONMap    `gorm:"type:json"`
-	CallbackURL        string     `gorm:"type:text"`
-	CallbackTokenHash  string     `gorm:"size:128;index"`
-	CallbackExpiresAt  *time.Time `gorm:"index"`
-	CallbackReceivedAt *time.Time `gorm:"index"`
-	PluginCallbackURL  string     `gorm:"type:text"`
-	PluginCallbackData JSONMap    `gorm:"type:json"`
-	ErrorCode     string          `gorm:"size:64"`
-	ErrorMessage  string          `gorm:"type:text"`
-	ErrorDetail   string          `gorm:"type:text"`
-	NextRunAt     time.Time       `gorm:"index"`
-	LockedBy      string          `gorm:"size:128;index"`
-	LockedUntil   *time.Time      `gorm:"index"`
-	FinishedAt    *time.Time      `gorm:"index"`
-	CallerApp     string          `gorm:"size:64"`
-	Operator      string          `gorm:"size:64"`
-	RequestID      string          `gorm:"size:128"`
-	TenantID       string          `gorm:"size:64"`
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                 uint            `gorm:"primaryKey"`
+	TraceID            string          `gorm:"size:64;uniqueIndex;not null"`
+	PluginVersion      string          `gorm:"size:32;index;not null"`
+	State              constants.State `gorm:"index;not null"`
+	InvokeCount        int             `gorm:"not null"`
+	Inputs             JSONMap         `gorm:"type:json"`
+	ContextInputs      JSONMap         `gorm:"type:json"`
+	ContextData        JSONMap         `gorm:"type:json"`
+	Outputs            JSONMap         `gorm:"type:json"`
+	CallbackData       JSONMap         `gorm:"type:json"`
+	CallbackURL        string          `gorm:"type:text"`
+	CallbackTokenHash  string          `gorm:"size:128;index"`
+	CallbackExpiresAt  *time.Time      `gorm:"index"`
+	CallbackReceivedAt *time.Time      `gorm:"index"`
+	PluginCallbackURL  string          `gorm:"type:text"`
+	PluginCallbackData JSONMap         `gorm:"type:json"`
+	ErrorCode          string          `gorm:"size:64"`
+	ErrorMessage       string          `gorm:"type:text"`
+	ErrorDetail        string          `gorm:"type:text"`
+	NextRunAt          time.Time       `gorm:"index"`
+	LockedBy           string          `gorm:"size:128;index"`
+	LockedUntil        *time.Time      `gorm:"index"`
+	FinishedAt         *time.Time      `gorm:"index"`
+	CallerApp          string          `gorm:"size:64"`
+	Operator           string          `gorm:"size:64"`
+	RequestID          string          `gorm:"size:128"`
+	TenantID           string          `gorm:"size:64"`
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type ScheduleStore interface {

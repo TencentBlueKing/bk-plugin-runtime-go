@@ -12,10 +12,10 @@ import (
 )
 
 type ExecuteRuntime struct {
-	ctx         context.Context
-	store       store.ScheduleStore
-	invokeCount int
-	tokenManager *callback.TokenManager
+	ctx             context.Context
+	store           store.ScheduleStore
+	invokeCount     int
+	tokenManager    *callback.TokenManager
 	callbackBaseURL string
 }
 
