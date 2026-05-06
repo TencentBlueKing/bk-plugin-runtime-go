@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 
+	"github.com/TencentBlueKing/bk-plugin-runtime-go/pluginapi"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/store"
 )
 
@@ -19,12 +20,17 @@ func NewRouter(cfg Config) *gin.Engine {
 		cfg.Logger = logrus.NewEntry(logrus.StandardLogger())
 	}
 
-	h := Handler{store: cfg.Store, logger: cfg.Logger}
+	h := Handler{store: cfg.Store, logger: cfg.Logger, engine: r}
 	group := r.Group("/bk_plugin")
 	group.GET("/meta", h.Meta)
 	group.GET("/detail/:version", h.Detail)
 	group.POST("/invoke/:version", h.RequireScope(), h.Invoke)
 	group.GET("/schedule/:trace_id", h.RequireScope(), h.Schedule)
 	group.POST("/callback/:token", h.Callback)
+	group.POST("/plugin_api_dispatch", h.RequireScope(), h.PluginAPIDispatch)
+	pluginAPIGroup := group.Group("/plugin_api", h.RequireScope())
+	for _, registrar := range pluginapi.Registrars() {
+		registrar(pluginAPIGroup)
+	}
 	return r
 }
