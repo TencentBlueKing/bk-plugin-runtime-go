@@ -17,6 +17,11 @@ type Schedule struct {
 	ContextInputs JSONMap         `gorm:"type:json"`
 	ContextData   JSONMap         `gorm:"type:json"`
 	Outputs       JSONMap         `gorm:"type:json"`
+	CallbackData  JSONMap         `gorm:"type:json"`
+	CallbackURL   string          `gorm:"type:text"`
+	CallbackTokenHash string      `gorm:"size:128;index"`
+	CallbackExpiresAt *time.Time  `gorm:"index"`
+	CallbackReceivedAt *time.Time `gorm:"index"`
 	ErrorCode     string          `gorm:"size:64"`
 	ErrorMessage  string          `gorm:"type:text"`
 	ErrorDetail   string          `gorm:"type:text"`
@@ -38,6 +43,8 @@ type ScheduleStore interface {
 	UpdateContextData(ctx context.Context, traceID string, data JSONMap) error
 	UpdateOutputs(ctx context.Context, traceID string, data JSONMap) error
 	MarkPoll(ctx context.Context, traceID string, invokeCount int, nextRunAt time.Time) error
+	MarkCallback(ctx context.Context, traceID string, invokeCount int, tokenHash string, expiresAt time.Time, callbackURL string) error
+	ReceiveCallback(ctx context.Context, traceID string, tokenHash string, data JSONMap, now time.Time) error
 	MarkSuccess(ctx context.Context, traceID string, invokeCount int) error
 	MarkFail(ctx context.Context, traceID string, invokeCount int, message string) error
 	ClaimDue(ctx context.Context, now time.Time, workerID string, limit int, lockFor time.Duration) ([]Schedule, error)

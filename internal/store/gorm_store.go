@@ -28,6 +28,9 @@ func (s *GormStore) Create(ctx context.Context, schedule *Schedule) error {
 	if schedule.Outputs == nil {
 		schedule.Outputs = JSONMap{}
 	}
+	if schedule.CallbackData == nil {
+		schedule.CallbackData = JSONMap{}
+	}
 	if schedule.Inputs == nil {
 		schedule.Inputs = JSONMap{}
 	}
@@ -63,6 +66,43 @@ func (s *GormStore) MarkPoll(ctx context.Context, traceID string, invokeCount in
 	}).Error
 }
 
+func (s *GormStore) MarkCallback(ctx context.Context, traceID string, invokeCount int, tokenHash string, expiresAt time.Time, callbackURL string) error {
+	return s.db.WithContext(ctx).Model(&Schedule{}).Where("trace_id = ?", traceID).Updates(map[string]interface{}{
+		"state":                 constants.StateCallback,
+		"invoke_count":          invokeCount,
+		"callback_token_hash":   tokenHash,
+		"callback_expires_at":   &expiresAt,
+		"callback_received_at":  nil,
+		"callback_data":         JSONMap{},
+		"callback_url":          callbackURL,
+		"locked_by":             "",
+		"locked_until":          nil,
+	}).Error
+}
+
+func (s *GormStore) ReceiveCallback(ctx context.Context, traceID string, tokenHash string, data JSONMap, now time.Time) error {
+	result := s.db.WithContext(ctx).Model(&Schedule{}).
+		Where("trace_id = ?", traceID).
+		Where("callback_token_hash = ?", tokenHash).
+		Where("state = ?", constants.StateCallback).
+		Where("finished_at IS NULL").
+		Where("callback_expires_at IS NULL OR callback_expires_at > ?", now).
+		Updates(map[string]interface{}{
+			"callback_data":        data,
+			"callback_received_at": &now,
+			"next_run_at":          now,
+			"locked_by":            "",
+			"locked_until":         nil,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func (s *GormStore) MarkSuccess(ctx context.Context, traceID string, invokeCount int) error {
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Model(&Schedule{}).Where("trace_id = ?", traceID).Updates(map[string]interface{}{
@@ -90,9 +130,8 @@ func (s *GormStore) MarkFail(ctx context.Context, traceID string, invokeCount in
 func (s *GormStore) ClaimDue(ctx context.Context, now time.Time, workerID string, limit int, lockFor time.Duration) ([]Schedule, error) {
 	var candidates []Schedule
 	err := s.db.WithContext(ctx).
-		Where("state = ?", constants.StatePoll).
+		Where("((state = ? AND next_run_at <= ?) OR (state = ? AND callback_received_at IS NOT NULL))", constants.StatePoll, now, constants.StateCallback).
 		Where("finished_at IS NULL").
-		Where("next_run_at <= ?", now).
 		Where("locked_until IS NULL OR locked_until < ?", now).
 		Order("next_run_at ASC").
 		Limit(limit).
@@ -106,9 +145,8 @@ func (s *GormStore) ClaimDue(ctx context.Context, now time.Time, workerID string
 	for _, item := range candidates {
 		result := s.db.WithContext(ctx).Model(&Schedule{}).
 			Where("trace_id = ?", item.TraceID).
-			Where("state = ?", constants.StatePoll).
+			Where("((state = ? AND next_run_at <= ?) OR (state = ? AND callback_received_at IS NOT NULL))", constants.StatePoll, now, constants.StateCallback).
 			Where("finished_at IS NULL").
-			Where("next_run_at <= ?", now).
 			Where("locked_until IS NULL OR locked_until < ?", now).
 			Updates(map[string]interface{}{"locked_by": workerID, "locked_until": &lockUntil})
 		if result.Error != nil {

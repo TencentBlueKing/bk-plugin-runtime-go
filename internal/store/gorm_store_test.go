@@ -75,6 +75,24 @@ func TestGormStoreMarkSuccessPersistsInvokeCount(t *testing.T) {
 	require.Equal(t, 2, got.InvokeCount)
 }
 
+func TestGormStoreReceiveCallbackMakesTaskClaimable(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Hour)
+
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "callback", PluginVersion: "1.0.0", State: constants.StateCallback, InvokeCount: 1}))
+	require.NoError(t, s.MarkCallback(ctx, "callback", 1, "hash", expiresAt, "/bk_plugin/callback/token"))
+	require.NoError(t, s.ReceiveCallback(ctx, "callback", "hash", JSONMap{"ok": true}, now))
+
+	claimed, err := s.ClaimDue(ctx, now, "worker-a", 5, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+	require.Equal(t, "callback", claimed[0].TraceID)
+	require.Equal(t, constants.StateCallback, claimed[0].State)
+	require.Equal(t, JSONMap{"ok": true}, claimed[0].CallbackData)
+}
+
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }

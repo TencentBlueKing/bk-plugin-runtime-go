@@ -9,6 +9,7 @@ import (
 type Reader struct {
 	Inputs        store.JSONMap
 	ContextInputs store.JSONMap
+	CallbackData  store.JSONMap
 }
 
 func (r Reader) ReadInputs(v interface{}) error {
@@ -21,6 +22,14 @@ func (r Reader) ReadInputs(v interface{}) error {
 
 func (r Reader) ReadContextInputs(v interface{}) error {
 	data, err := json.Marshal(r.ContextInputs)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
+}
+
+func (r Reader) ReadCallback(v interface{}) error {
+	data, err := json.Marshal(r.CallbackData)
 	if err != nil {
 		return err
 	}

@@ -25,5 +25,6 @@ func NewRouter(cfg Config) *gin.Engine {
 	group.GET("/detail/:version", h.Detail)
 	group.POST("/invoke/:version", h.Invoke)
 	group.GET("/schedule/:trace_id", h.Schedule)
+	group.POST("/callback/:token", h.Callback)
 	return r
 }
