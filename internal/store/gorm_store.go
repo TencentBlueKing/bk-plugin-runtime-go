@@ -31,6 +31,9 @@ func (s *GormStore) Create(ctx context.Context, schedule *Schedule) error {
 	if schedule.CallbackData == nil {
 		schedule.CallbackData = JSONMap{}
 	}
+	if schedule.PluginCallbackData == nil {
+		schedule.PluginCallbackData = JSONMap{}
+	}
 	if schedule.Inputs == nil {
 		schedule.Inputs = JSONMap{}
 	}

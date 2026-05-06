@@ -2,11 +2,15 @@ package scheduler
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/TencentBlueKing/bk-plugin-framework-go/constants"
 	"github.com/TencentBlueKing/bk-plugin-framework-go/executor"
+	"github.com/TencentBlueKing/bk-plugin-framework-go/hub"
+	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/finishcallback"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/runtimeadapter"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/store"
 )
@@ -69,6 +73,26 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		if err := executor.ScheduleWithState(item.TraceID, item.PluginVersion, invokeCount, item.State, reader, rt, logger); err != nil {
 			logger.WithError(err).Error("schedule plugin")
 		}
+		updated, err := w.cfg.Store.Get(ctx, item.TraceID)
+		if err != nil {
+			logger.WithError(err).Error("get schedule after run")
+			continue
+		}
+		notifyFinish(ctx, logger, updated)
 	}
 	return nil
+}
+
+func notifyFinish(ctx context.Context, logger *logrus.Entry, schedule *store.Schedule) {
+	if schedule == nil || !isFinished(schedule.State) || !hub.GetOptions().EnablePluginCallback || schedule.PluginCallbackURL == "" {
+		return
+	}
+	info := finishcallback.Info{URL: schedule.PluginCallbackURL, Data: schedule.PluginCallbackData}
+	if err := finishcallback.NotifyWithRetry(ctx, http.DefaultClient, info); err != nil {
+		logger.WithError(err).Error("plugin finish callback failed")
+	}
+}
+
+func isFinished(state constants.State) bool {
+	return state == constants.StateSuccess || state == constants.StateFail
 }
