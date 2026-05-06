@@ -42,8 +42,16 @@ func (p testPlugin) Execute(ctx *kit.Context) error {
 var installTestPluginOnce sync.Once
 
 func newTestRouter(t *testing.T) (*gin.Engine, *store.GormStore) {
+	return newTestRouterWithOptions(t, hub.Options{})
+}
+
+func newTestRouterWithOptions(t *testing.T, opts hub.Options) (*gin.Engine, *store.GormStore) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
+	hub.Configure(opts)
+	t.Cleanup(func() {
+		hub.Configure(hub.Options{})
+	})
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	s := store.NewGormStore(db)
@@ -99,4 +107,47 @@ func TestInvokeSyncAndScheduleRead(t *testing.T) {
 	router.ServeHTTP(schedule, req)
 	require.Equal(t, http.StatusOK, schedule.Code)
 	require.Contains(t, schedule.Body.String(), `"mode":"sync"`)
+}
+
+func TestInvokeScopeDenied(t *testing.T) {
+	router, _ := newTestRouterWithOptions(t, hub.Options{
+		AllowScope: hub.AllowScope{
+			"bk_sops": {Type: "project", Value: []string{"1"}},
+		},
+	})
+
+	body := bytes.NewBufferString(`{"inputs":{"mode":"sync"},"context":{}}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bk_plugin/invoke/9.9.1", body)
+	req.Header.Set("X-Bkapi-App-Code", "bk_sops")
+	req.Header.Set("Bkplugin-Scope-Type", "project")
+	req.Header.Set("Bkplugin-Scope-Value", "2")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestInvokeFinishCallback(t *testing.T) {
+	var got store.JSONMap
+	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		_, _ = w.Write([]byte(`{"result": true}`))
+	}))
+	defer callbackServer.Close()
+
+	router, _ := newTestRouterWithOptions(t, hub.Options{EnablePluginCallback: true})
+
+	body := bytes.NewBufferString(`{
+		"inputs":{"mode":"sync"},
+		"context":{
+			"plugin_callback_info":{
+				"url":"` + callbackServer.URL + `",
+				"data":{"trace_id":"from-caller"}
+			}
+		}
+	}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bk_plugin/invoke/9.9.1", body)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, store.JSONMap{"trace_id": "from-caller"}, got)
 }

@@ -17,11 +17,13 @@ type Schedule struct {
 	ContextInputs JSONMap         `gorm:"type:json"`
 	ContextData   JSONMap         `gorm:"type:json"`
 	Outputs       JSONMap         `gorm:"type:json"`
-	CallbackData  JSONMap         `gorm:"type:json"`
-	CallbackURL   string          `gorm:"type:text"`
-	CallbackTokenHash string      `gorm:"size:128;index"`
-	CallbackExpiresAt *time.Time  `gorm:"index"`
+	CallbackData       JSONMap    `gorm:"type:json"`
+	CallbackURL        string     `gorm:"type:text"`
+	CallbackTokenHash  string     `gorm:"size:128;index"`
+	CallbackExpiresAt  *time.Time `gorm:"index"`
 	CallbackReceivedAt *time.Time `gorm:"index"`
+	PluginCallbackURL  string     `gorm:"type:text"`
+	PluginCallbackData JSONMap    `gorm:"type:json"`
 	ErrorCode     string          `gorm:"size:64"`
 	ErrorMessage  string          `gorm:"type:text"`
 	ErrorDetail   string          `gorm:"type:text"`

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"time"
@@ -12,7 +13,9 @@ import (
 	"github.com/TencentBlueKing/bk-plugin-framework-go/constants"
 	"github.com/TencentBlueKing/bk-plugin-framework-go/executor"
 	"github.com/TencentBlueKing/bk-plugin-framework-go/hub"
+	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/auth"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/callback"
+	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/finishcallback"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/httpx"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/runtimeadapter"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/store"
@@ -55,6 +58,17 @@ func (h Handler) Detail(c *gin.Context) {
 	})
 }
 
+func (h Handler) RequireScope() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !auth.AllowRequest(c.Request, hub.GetOptions().AllowScope) {
+			httpx.Error(c, http.StatusForbidden, 40300, "scope is not allowed")
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 func (h Handler) Invoke(c *gin.Context) {
 	versionCode := c.Param("version")
 	if _, err := hub.GetPluginDetail(versionCode); err != nil {
@@ -67,17 +81,24 @@ func (h Handler) Invoke(c *gin.Context) {
 		httpx.Error(c, http.StatusBadRequest, 40000, err.Error())
 		return
 	}
+	pluginCallbackInfo, _ := finishcallback.Parse(req.Context)
 	traceID := uuid.NewString()
 	schedule := &store.Schedule{
-		TraceID:       traceID,
-		PluginVersion: versionCode,
-		State:         constants.StateEmpty,
-		InvokeCount:   1,
-		Inputs:        req.Inputs,
-		ContextInputs: req.Context,
-		ContextData:   store.JSONMap{},
-		Outputs:       store.JSONMap{},
-		NextRunAt:     time.Now().UTC(),
+		TraceID:            traceID,
+		PluginVersion:      versionCode,
+		State:              constants.StateEmpty,
+		InvokeCount:        1,
+		Inputs:             req.Inputs,
+		ContextInputs:      req.Context,
+		ContextData:        store.JSONMap{},
+		Outputs:            store.JSONMap{},
+		PluginCallbackURL:  pluginCallbackInfo.URL,
+		PluginCallbackData: pluginCallbackInfo.Data,
+		NextRunAt:          time.Now().UTC(),
+		CallerApp:          auth.CallerApp(c.Request),
+		Operator:           auth.Operator(c.Request),
+		RequestID:          auth.RequestID(c.Request),
+		TenantID:           auth.TenantID(c.Request),
 	}
 	if err := h.store.Create(c.Request.Context(), schedule); err != nil {
 		httpx.Error(c, http.StatusInternalServerError, 50000, err.Error())
@@ -90,6 +111,9 @@ func (h Handler) Invoke(c *gin.Context) {
 	state, err := executor.Execute(traceID, versionCode, reader, rt, logger)
 	if err != nil {
 		_ = h.store.MarkFail(c.Request.Context(), traceID, 1, err.Error())
+		if saved, getErr := h.store.Get(c.Request.Context(), traceID); getErr == nil {
+			h.notifyFinish(c.Request.Context(), saved)
+		}
 		httpx.OK(c, gin.H{"trace_id": traceID, "state": constants.StateFail})
 		return
 	}
@@ -101,6 +125,7 @@ func (h Handler) Invoke(c *gin.Context) {
 		httpx.Error(c, http.StatusInternalServerError, 50000, err.Error())
 		return
 	}
+	h.notifyFinish(c.Request.Context(), saved)
 	httpx.OK(c, gin.H{"trace_id": traceID, "state": saved.State, "outputs": saved.Outputs, "callback_url": saved.CallbackURL})
 }
 
@@ -140,4 +165,18 @@ func (h Handler) Callback(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"trace_id": traceID, "state": constants.StateCallback})
+}
+
+func (h Handler) notifyFinish(ctx context.Context, schedule *store.Schedule) {
+	if schedule == nil || !isFinished(schedule.State) || !hub.GetOptions().EnablePluginCallback || schedule.PluginCallbackURL == "" {
+		return
+	}
+	info := finishcallback.Info{URL: schedule.PluginCallbackURL, Data: schedule.PluginCallbackData}
+	if err := finishcallback.NotifyWithRetry(ctx, http.DefaultClient, info); err != nil {
+		h.logger.WithError(err).WithField("trace_id", schedule.TraceID).Error("plugin finish callback failed")
+	}
+}
+
+func isFinished(state constants.State) bool {
+	return state == constants.StateSuccess || state == constants.StateFail
 }

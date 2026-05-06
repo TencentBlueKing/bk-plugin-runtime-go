@@ -23,8 +23,8 @@ func NewRouter(cfg Config) *gin.Engine {
 	group := r.Group("/bk_plugin")
 	group.GET("/meta", h.Meta)
 	group.GET("/detail/:version", h.Detail)
-	group.POST("/invoke/:version", h.Invoke)
-	group.GET("/schedule/:trace_id", h.Schedule)
+	group.POST("/invoke/:version", h.RequireScope(), h.Invoke)
+	group.GET("/schedule/:trace_id", h.RequireScope(), h.Schedule)
 	group.POST("/callback/:token", h.Callback)
 	return r
 }
