@@ -71,15 +71,15 @@ func (s *GormStore) MarkPoll(ctx context.Context, traceID string, invokeCount in
 
 func (s *GormStore) MarkCallback(ctx context.Context, traceID string, invokeCount int, tokenHash string, expiresAt time.Time, callbackURL string) error {
 	return s.db.WithContext(ctx).Model(&Schedule{}).Where("trace_id = ?", traceID).Updates(map[string]interface{}{
-		"state":                 constants.StateCallback,
-		"invoke_count":          invokeCount,
-		"callback_token_hash":   tokenHash,
-		"callback_expires_at":   &expiresAt,
-		"callback_received_at":  nil,
-		"callback_data":         JSONMap{},
-		"callback_url":          callbackURL,
-		"locked_by":             "",
-		"locked_until":          nil,
+		"state":                constants.StateCallback,
+		"invoke_count":         invokeCount,
+		"callback_token_hash":  tokenHash,
+		"callback_expires_at":  &expiresAt,
+		"callback_received_at": nil,
+		"callback_data":        JSONMap{},
+		"callback_url":         callbackURL,
+		"locked_by":            "",
+		"locked_until":         nil,
 	}).Error
 }
 

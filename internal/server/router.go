@@ -4,8 +4,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 
-	"github.com/TencentBlueKing/bk-plugin-runtime-go/pluginapi"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/store"
+	"github.com/TencentBlueKing/bk-plugin-runtime-go/pluginapi"
 )
 
 type Config struct {

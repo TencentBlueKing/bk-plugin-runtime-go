@@ -58,9 +58,13 @@ func newTestRouterWithOptions(t *testing.T, opts hub.Options) (*gin.Engine, *sto
 	require.NoError(t, s.AutoMigrate(context.Background()))
 	installTestPluginOnce.Do(func() {
 		hub.MustInstallV2(testPlugin{}, hub.PluginSpec{
-			Inputs:  struct{ Mode string `json:"mode"` }{},
-			Outputs: struct{ Mode string `json:"mode"` }{},
-			Form:    []byte(`{"mode":{"component":"input"}}`),
+			Inputs: struct {
+				Mode string `json:"mode"`
+			}{},
+			Outputs: struct {
+				Mode string `json:"mode"`
+			}{},
+			Form: []byte(`{"mode":{"component":"input"}}`),
 		})
 	})
 	return NewRouter(Config{Store: s, Logger: logrus.NewEntry(logrus.StandardLogger())}), s
