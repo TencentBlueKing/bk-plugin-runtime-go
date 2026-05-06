@@ -25,6 +25,7 @@ import (
 type Handler struct {
 	store  store.ScheduleStore
 	logger *logrus.Entry
+	engine *gin.Engine
 }
 
 type invokeRequest struct {
