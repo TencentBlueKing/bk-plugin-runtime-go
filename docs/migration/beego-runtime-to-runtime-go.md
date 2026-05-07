@@ -149,14 +149,26 @@ hub.Configure(hub.Options{
 
 ## plugin API dispatch
 
-插件应用可以注册 Gin 路由：
+插件应用可以通过 framework 的 `pluginapi` 注册自定义 API，业务代码不需要依赖 Gin：
 
 ```go
-pluginapi.RegisterGin(func(router gin.IRouter) {
-    router.POST("/echo", func(c *gin.Context) {
-        c.JSON(200, gin.H{"ok": true})
+import (
+    "encoding/json"
+    "net/http"
+
+    "github.com/TencentBlueKing/bk-plugin-framework-go/pluginapi"
+)
+
+func init() {
+    pluginapi.Register(func(router pluginapi.Router) {
+        router.POST("/echo", func(w http.ResponseWriter, r *http.Request) {
+            _ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+        })
+        router.GET("/tasks/:id", func(w http.ResponseWriter, r *http.Request) {
+            _ = json.NewEncoder(w).Encode(map[string]string{"id": pluginapi.Param(r, "id")})
+        })
     })
-})
+}
 ```
 
 调用方通过 `/bk_plugin/plugin_api_dispatch` 分发：
