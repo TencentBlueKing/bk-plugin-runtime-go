@@ -4,8 +4,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 
+	"github.com/TencentBlueKing/bk-plugin-framework-go/pluginapi"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/store"
-	"github.com/TencentBlueKing/bk-plugin-runtime-go/pluginapi"
 )
 
 type Config struct {
@@ -29,8 +29,9 @@ func NewRouter(cfg Config) *gin.Engine {
 	group.POST("/callback/:token", h.Callback)
 	group.POST("/plugin_api_dispatch", h.RequireScope(), h.PluginAPIDispatch)
 	pluginAPIGroup := group.Group("/plugin_api", h.RequireScope())
+	pluginAPIRouter := ginPluginAPIRouter{group: pluginAPIGroup}
 	for _, registrar := range pluginapi.Registrars() {
-		registrar(pluginAPIGroup)
+		registrar(pluginAPIRouter)
 	}
 	return r
 }
