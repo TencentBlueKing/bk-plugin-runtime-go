@@ -12,20 +12,35 @@ import (
 )
 
 type ExecuteRuntime struct {
-	ctx             context.Context
-	store           store.ScheduleStore
-	invokeCount     int
-	tokenManager    *callback.TokenManager
-	callbackBaseURL string
+	ctx              context.Context
+	store            store.ScheduleStore
+	invokeCount      int
+	tokenManager     *callback.TokenManager
+	callbackBaseURL  string
+	preparedCallback *preparedCallback
+}
+
+type preparedCallback struct {
+	preparation runtime.CallbackPreparation
+	tokenHash   string
+	expiresAt   time.Time
 }
 
 func NewExecuteRuntime(ctx context.Context, scheduleStore store.ScheduleStore, invokeCount int) *ExecuteRuntime {
+	return NewExecuteRuntimeWithCallbackBaseURL(ctx, scheduleStore, invokeCount, "")
+}
+
+func NewExecuteRuntimeWithCallbackBaseURL(ctx context.Context, scheduleStore store.ScheduleStore, invokeCount int, callbackBaseURL string) *ExecuteRuntime {
+	baseURL := strings.TrimRight(os.Getenv("BK_PLUGIN_CALLBACK_BASE_URL"), "/")
+	if baseURL == "" {
+		baseURL = strings.TrimRight(callbackBaseURL, "/")
+	}
 	return &ExecuteRuntime{
 		ctx:             ctx,
 		store:           scheduleStore,
 		invokeCount:     invokeCount,
 		tokenManager:    callback.NewTokenManager(os.Getenv("BK_PLUGIN_CALLBACK_TOKEN_SECRET")),
-		callbackBaseURL: strings.TrimRight(os.Getenv("BK_PLUGIN_CALLBACK_BASE_URL"), "/"),
+		callbackBaseURL: baseURL,
 	}
 }
 
@@ -41,16 +56,44 @@ func (r *ExecuteRuntime) SetPoll(traceID string, version string, invokeCount int
 	return r.store.MarkPoll(r.ctx, traceID, invokeCount, time.Now().UTC().Add(after))
 }
 
+func (r *ExecuteRuntime) PrepareCallback(traceID string, version string, invokeCount int, timeout time.Duration) (runtime.CallbackPreparation, error) {
+	prepared, err := r.issueCallback(traceID, timeout)
+	if err != nil {
+		return runtime.CallbackPreparation{}, err
+	}
+	r.preparedCallback = prepared
+	return prepared.preparation, nil
+}
+
 func (r *ExecuteRuntime) SetCallback(traceID string, version string, invokeCount int, timeout time.Duration) error {
+	prepared := r.preparedCallback
+	if prepared == nil {
+		var err error
+		prepared, err = r.issueCallback(traceID, timeout)
+		if err != nil {
+			return err
+		}
+	}
+	return r.store.MarkCallback(r.ctx, traceID, invokeCount, prepared.tokenHash, prepared.expiresAt, prepared.preparation.URL)
+}
+
+func (r *ExecuteRuntime) issueCallback(traceID string, timeout time.Duration) (*preparedCallback, error) {
 	token, tokenHash, expiresAt, err := r.tokenManager.Issue(traceID, timeout)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	callbackURL := "/bk_plugin/callback/" + token
 	if r.callbackBaseURL != "" {
 		callbackURL = r.callbackBaseURL + callbackURL
 	}
-	return r.store.MarkCallback(r.ctx, traceID, invokeCount, tokenHash, expiresAt, callbackURL)
+	return &preparedCallback{
+		preparation: runtime.CallbackPreparation{
+			ID:  tokenHash,
+			URL: callbackURL,
+		},
+		tokenHash: tokenHash,
+		expiresAt: expiresAt,
+	}, nil
 }
 
 func (r *ExecuteRuntime) SetFail(traceID string, err error) error {

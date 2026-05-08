@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"github.com/TencentBlueKing/bk-plugin-framework-go/constants"
 	"github.com/TencentBlueKing/bk-plugin-framework-go/hub"
 	frameworkInfo "github.com/TencentBlueKing/bk-plugin-framework-go/info"
 	"github.com/TencentBlueKing/bk-plugin-framework-go/kit"
@@ -33,6 +35,17 @@ func (p testPlugin) Execute(ctx *kit.Context) error {
 	}
 	if err := ctx.ReadInputs(&inputs); err != nil {
 		return err
+	}
+	if inputs.Mode == "callback" && ctx.InvokeCount() == 1 {
+		preparation, err := ctx.PrepareCallback(time.Minute)
+		if err != nil {
+			return err
+		}
+		if err := ctx.WriteOutputs(map[string]interface{}{"mode": inputs.Mode, "callback_url": preparation.URL}); err != nil {
+			return err
+		}
+		ctx.WaitCallback(time.Minute)
+		return nil
 	}
 	if inputs.Mode == "poll" && ctx.InvokeCount() == 1 {
 		ctx.WaitPoll(time.Millisecond)
@@ -206,6 +219,31 @@ func TestInvokeSyncAndScheduleRead(t *testing.T) {
 	router.ServeHTTP(schedule, req)
 	require.Equal(t, http.StatusOK, schedule.Code)
 	require.Contains(t, schedule.Body.String(), `"mode":"sync"`)
+}
+
+func TestInvokePreparedCallbackUsesRequestBaseURL(t *testing.T) {
+	router, _ := newTestRouter(t)
+
+	body := bytes.NewBufferString(`{"inputs":{"mode":"callback"},"context":{}}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://plugin.example.com/bk_plugin/invoke/9.9.1", body)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var payload struct {
+		Data struct {
+			State       constants.State `json:"state"`
+			CallbackURL string          `json:"callback_url"`
+			Outputs     struct {
+				CallbackURL string `json:"callback_url"`
+			} `json:"outputs"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	require.Equal(t, constants.StateCallback, payload.Data.State)
+	require.True(t, strings.HasPrefix(payload.Data.CallbackURL, "https://plugin.example.com/bk_plugin/callback/"))
+	require.Equal(t, payload.Data.CallbackURL, payload.Data.Outputs.CallbackURL)
 }
 
 func TestInvokeScopeDenied(t *testing.T) {

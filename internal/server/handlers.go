@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -112,7 +113,7 @@ func (h Handler) Invoke(c *gin.Context) {
 	}
 
 	reader := runtimeadapter.Reader{Inputs: req.Inputs, ContextInputs: req.Context}
-	rt := runtimeadapter.NewExecuteRuntime(c.Request.Context(), h.store, 1)
+	rt := runtimeadapter.NewExecuteRuntimeWithCallbackBaseURL(c.Request.Context(), h.store, 1, requestBaseURL(c.Request))
 	logger := h.logger.WithField("trace_id", traceID)
 	state, err := executor.Execute(traceID, versionCode, reader, rt, logger)
 	if err != nil {
@@ -185,4 +186,30 @@ func (h Handler) notifyFinish(ctx context.Context, schedule *store.Schedule) {
 
 func isFinished(state constants.State) bool {
 	return state == constants.StateSuccess || state == constants.StateFail
+}
+
+func requestBaseURL(req *http.Request) string {
+	host := firstForwardedValue(req.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = req.Host
+	}
+	if host == "" {
+		return ""
+	}
+	scheme := firstForwardedValue(req.Header.Get("X-Forwarded-Proto"))
+	if scheme == "" {
+		if req.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	return scheme + "://" + host
+}
+
+func firstForwardedValue(value string) string {
+	if idx := strings.Index(value, ","); idx >= 0 {
+		value = value[:idx]
+	}
+	return strings.TrimSpace(value)
 }
