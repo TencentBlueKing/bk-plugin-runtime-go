@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,10 +15,44 @@ import (
 
 func newTestStore(t *testing.T) *GormStore {
 	t.Helper()
+	s, _ := newTestStoreWithDB(t)
+	return s
+}
+
+func newTestStoreWithDB(t *testing.T) (*GormStore, *gorm.DB) {
+	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&Schedule{}))
-	return NewGormStore(db)
+	s := NewGormStore(db)
+	require.NoError(t, s.AutoMigrate(context.Background()))
+	return s, db
+}
+
+func TestGormStoreAutoMigrateCreatesClaimIndexes(t *testing.T) {
+	_, db := newTestStoreWithDB(t)
+
+	require.True(t, db.Migrator().HasIndex(&Schedule{}, "idx_schedules_claim_poll"))
+	require.True(t, db.Migrator().HasIndex(&Schedule{}, "idx_schedules_claim_callback"))
+}
+
+func TestGormStoreClaimDueCandidateQueriesUseSeparateStateBranches(t *testing.T) {
+	_, db := newTestStoreWithDB(t)
+	now := time.Date(2026, 5, 8, 7, 44, 48, 0, time.UTC)
+	dryRunDB := db.Session(&gorm.Session{DryRun: true})
+
+	var pollCandidates []Schedule
+	pollSQL := duePollCandidatesQuery(dryRunDB, now, 10).Find(&pollCandidates).Statement.SQL.String()
+	require.Contains(t, pollSQL, "state = ?")
+	require.Contains(t, pollSQL, "next_run_at <= ?")
+	require.NotContains(t, strings.ToLower(pollSQL), "callback_received_at is not null")
+	require.NotContains(t, pollSQL, "OR (state")
+
+	var callbackCandidates []Schedule
+	callbackSQL := dueCallbackCandidatesQuery(dryRunDB, now, 10).Find(&callbackCandidates).Statement.SQL.String()
+	require.Contains(t, callbackSQL, "state = ?")
+	require.Contains(t, strings.ToLower(callbackSQL), "callback_received_at is not null")
+	require.NotContains(t, callbackSQL, "next_run_at <= ?")
+	require.NotContains(t, callbackSQL, "OR (state")
 }
 
 func TestGormStoreCreateAndGet(t *testing.T) {
@@ -91,6 +126,24 @@ func TestGormStoreReceiveCallbackMakesTaskClaimable(t *testing.T) {
 	require.Equal(t, "callback", claimed[0].TraceID)
 	require.Equal(t, constants.StateCallback, claimed[0].State)
 	require.Equal(t, JSONMap{"ok": true}, claimed[0].CallbackData)
+}
+
+func TestGormStoreClaimDueMergesPollAndCallbackByDueTime(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+	callbackReceivedAt := now.Add(-20 * time.Second)
+
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "poll-old", PluginVersion: "1.0.0", State: constants.StatePoll, InvokeCount: 1, NextRunAt: now.Add(-30 * time.Second)}))
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "callback-due", PluginVersion: "1.0.0", State: constants.StateCallback, InvokeCount: 1, CallbackReceivedAt: &callbackReceivedAt, NextRunAt: callbackReceivedAt}))
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "poll-new", PluginVersion: "1.0.0", State: constants.StatePoll, InvokeCount: 1, NextRunAt: now.Add(-5 * time.Second)}))
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "callback-waiting", PluginVersion: "1.0.0", State: constants.StateCallback, InvokeCount: 1, NextRunAt: now.Add(-40 * time.Second)}))
+
+	claimed, err := s.ClaimDue(ctx, now, "worker-a", 2, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, claimed, 2)
+	require.Equal(t, "poll-old", claimed[0].TraceID)
+	require.Equal(t, "callback-due", claimed[1].TraceID)
 }
 
 func ptrTime(t time.Time) *time.Time {

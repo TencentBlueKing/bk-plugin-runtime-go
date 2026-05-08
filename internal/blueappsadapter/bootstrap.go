@@ -17,13 +17,24 @@ import (
 )
 
 func LoadAndInit(ctx context.Context, cfgFile string) (*config.Config, error) {
+	if err := prepareBlueappsEnv(); err != nil {
+		return nil, err
+	}
 	cfg, err := config.Load(ctx, cfgFile)
 	if err != nil {
 		return nil, errors.Wrap(err, "load blueapps config")
 	}
-	i18n.InitMsgMap()
+	if err := initI18nIfPresent(); err != nil {
+		return nil, err
+	}
 	if err := initLoggers(&cfg.Service.Log); err != nil {
 		return nil, err
+	}
+	if cfg.Platform.Addons.Mysql == nil {
+		return nil, errors.New(
+			"mysql addon config is required; expected MYSQL_HOST, MYSQL_PORT, MYSQL_NAME, MYSQL_USER, MYSQL_PASSWORD " +
+				"or legacy GCS_MYSQL_* env vars",
+		)
 	}
 	database.InitDBClient(ctx, cfg.Platform.Addons.Mysql, log.GetLogger("gorm"))
 	if cfg.Platform.Addons.Redis != nil {
@@ -31,6 +42,38 @@ func LoadAndInit(ctx context.Context, cfgFile string) (*config.Config, error) {
 	}
 	memory.InitCache(cfg.Service.MemoryCacheSize)
 	return cfg, nil
+}
+
+func prepareBlueappsEnv() error {
+	legacyMysqlEnv := map[string]string{
+		"MYSQL_HOST":     "GCS_MYSQL_HOST",
+		"MYSQL_PORT":     "GCS_MYSQL_PORT",
+		"MYSQL_NAME":     "GCS_MYSQL_NAME",
+		"MYSQL_USER":     "GCS_MYSQL_USER",
+		"MYSQL_PASSWORD": "GCS_MYSQL_PASSWORD",
+	}
+	for target, legacy := range legacyMysqlEnv {
+		if os.Getenv(target) != "" {
+			continue
+		}
+		if value := os.Getenv(legacy); value != "" {
+			if err := os.Setenv(target, value); err != nil {
+				return errors.Wrapf(err, "set env %s from %s", target, legacy)
+			}
+		}
+	}
+	return nil
+}
+
+func initI18nIfPresent() error {
+	if _, err := os.Stat(i18n.MsgFilepath()); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return errors.Wrap(err, "stat i18n file")
+	}
+	i18n.InitMsgMap()
+	return nil
 }
 
 func initLoggers(cfg *config.LogConfig) error {

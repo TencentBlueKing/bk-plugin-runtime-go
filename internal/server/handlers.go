@@ -13,6 +13,7 @@ import (
 	"github.com/TencentBlueKing/bk-plugin-framework-go/constants"
 	"github.com/TencentBlueKing/bk-plugin-framework-go/executor"
 	"github.com/TencentBlueKing/bk-plugin-framework-go/hub"
+	"github.com/TencentBlueKing/bk-plugin-framework-go/protocol"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/auth"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/callback"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/finishcallback"
@@ -34,29 +35,33 @@ type invokeRequest struct {
 }
 
 func (h Handler) Meta(c *gin.Context) {
-	httpx.OK(c, gin.H{
-		"language":        "go",
-		"runtime_version": version.Version,
-		"versions":        hub.GetPluginVersions(),
-	})
+	opts := hub.GetOptions()
+	httpx.OK(c, protocol.BuildMeta(protocol.MetaOptions{
+		Code:           pluginCode(),
+		Language:       "go",
+		RuntimeVersion: version.Version,
+		AllowScope:     opts.AllowScope,
+	}))
 }
 
 func (h Handler) Detail(c *gin.Context) {
-	detail, err := hub.GetPluginDetail(c.Param("version"))
+	data, err := protocol.BuildDetail(c.Param("version"), protocol.DetailOptions{
+		EnablePluginCallback: hub.GetOptions().EnablePluginCallback,
+	})
 	if err != nil {
 		httpx.Error(c, http.StatusNotFound, 40404, err.Error())
 		return
 	}
-	httpx.OK(c, gin.H{
-		"version":        detail.Plugin().Version(),
-		"desc":           detail.Plugin().Desc(),
-		"inputs":         detail.InputsSchemaJSON(),
-		"context_inputs": detail.ContextInputsSchemaJSON(),
-		"outputs":        detail.OutputsSchemaJSON(),
-		"forms": gin.H{
-			"renderform": detail.FormsRenderFormJSON(),
-		},
-	})
+	httpx.OK(c, data)
+}
+
+func pluginCode() string {
+	for _, key := range []string{"BKPAAS_APP_ID", "APP_CODE", "BK_APP_CODE"} {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (h Handler) RequireScope() gin.HandlerFunc {

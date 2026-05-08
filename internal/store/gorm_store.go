@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"gorm.io/gorm"
@@ -131,27 +132,20 @@ func (s *GormStore) MarkFail(ctx context.Context, traceID string, invokeCount in
 }
 
 func (s *GormStore) ClaimDue(ctx context.Context, now time.Time, workerID string, limit int, lockFor time.Duration) ([]Schedule, error) {
-	var candidates []Schedule
-	err := s.db.WithContext(ctx).
-		Where("((state = ? AND next_run_at <= ?) OR (state = ? AND callback_received_at IS NOT NULL))", constants.StatePoll, now, constants.StateCallback).
-		Where("finished_at IS NULL").
-		Where("locked_until IS NULL OR locked_until < ?", now).
-		Order("next_run_at ASC").
-		Limit(limit).
-		Find(&candidates).Error
+	pollCandidates, err := s.findDuePollCandidates(ctx, now, limit)
 	if err != nil {
 		return nil, err
 	}
+	callbackCandidates, err := s.findDueCallbackCandidates(ctx, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	candidates := mergeDueCandidates(pollCandidates, callbackCandidates, limit)
 
 	claimed := make([]Schedule, 0, len(candidates))
 	lockUntil := now.Add(lockFor)
 	for _, item := range candidates {
-		result := s.db.WithContext(ctx).Model(&Schedule{}).
-			Where("trace_id = ?", item.TraceID).
-			Where("((state = ? AND next_run_at <= ?) OR (state = ? AND callback_received_at IS NOT NULL))", constants.StatePoll, now, constants.StateCallback).
-			Where("finished_at IS NULL").
-			Where("locked_until IS NULL OR locked_until < ?", now).
-			Updates(map[string]interface{}{"locked_by": workerID, "locked_until": &lockUntil})
+		result := s.claimDueItem(ctx, item, now, workerID, lockUntil)
 		if result.Error != nil {
 			return nil, result.Error
 		}
@@ -162,4 +156,76 @@ func (s *GormStore) ClaimDue(ctx context.Context, now time.Time, workerID string
 		}
 	}
 	return claimed, nil
+}
+
+func (s *GormStore) findDuePollCandidates(ctx context.Context, now time.Time, limit int) ([]Schedule, error) {
+	var candidates []Schedule
+	err := duePollCandidatesQuery(s.db.WithContext(ctx), now, limit).
+		Find(&candidates).Error
+	return candidates, err
+}
+
+func (s *GormStore) findDueCallbackCandidates(ctx context.Context, now time.Time, limit int) ([]Schedule, error) {
+	var candidates []Schedule
+	err := dueCallbackCandidatesQuery(s.db.WithContext(ctx), now, limit).
+		Find(&candidates).Error
+	return candidates, err
+}
+
+func duePollCandidatesQuery(db *gorm.DB, now time.Time, limit int) *gorm.DB {
+	return claimableScheduleScope(db, now).
+		Where("state = ?", constants.StatePoll).
+		Where("next_run_at <= ?", now).
+		Order("next_run_at ASC").
+		Limit(limit)
+}
+
+func dueCallbackCandidatesQuery(db *gorm.DB, now time.Time, limit int) *gorm.DB {
+	return claimableScheduleScope(db, now).
+		Where("state = ?", constants.StateCallback).
+		Where("callback_received_at IS NOT NULL").
+		Order("callback_received_at ASC").
+		Limit(limit)
+}
+
+func claimableScheduleScope(db *gorm.DB, now time.Time) *gorm.DB {
+	return db.
+		Where("finished_at IS NULL").
+		Where("locked_until IS NULL OR locked_until < ?", now)
+}
+
+func (s *GormStore) claimDueItem(ctx context.Context, item Schedule, now time.Time, workerID string, lockUntil time.Time) *gorm.DB {
+	query := claimableScheduleScope(s.db.WithContext(ctx).Model(&Schedule{}).Where("trace_id = ?", item.TraceID), now)
+	switch item.State {
+	case constants.StatePoll:
+		query = query.Where("state = ?", constants.StatePoll).Where("next_run_at <= ?", now)
+	case constants.StateCallback:
+		query = query.Where("state = ?", constants.StateCallback).Where("callback_received_at IS NOT NULL")
+	default:
+		query = query.Where("1 = 0")
+	}
+	return query.Updates(map[string]interface{}{"locked_by": workerID, "locked_until": &lockUntil})
+}
+
+func mergeDueCandidates(pollCandidates []Schedule, callbackCandidates []Schedule, limit int) []Schedule {
+	if limit <= 0 {
+		return nil
+	}
+	candidates := make([]Schedule, 0, len(pollCandidates)+len(callbackCandidates))
+	candidates = append(candidates, pollCandidates...)
+	candidates = append(candidates, callbackCandidates...)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return dueAt(candidates[i]).Before(dueAt(candidates[j]))
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates
+}
+
+func dueAt(item Schedule) time.Time {
+	if item.State == constants.StateCallback && item.CallbackReceivedAt != nil {
+		return *item.CallbackReceivedAt
+	}
+	return item.NextRunAt
 }
