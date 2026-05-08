@@ -65,11 +65,22 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if len(items) > 0 {
+		w.cfg.Logger.WithFields(logrus.Fields{
+			"claimed_count": len(items),
+			"worker_id":     w.cfg.WorkerID,
+		}).Info("plugin scheduler claimed tasks")
+	}
 	for _, item := range items {
 		invokeCount := item.InvokeCount + 1
 		reader := runtimeadapter.Reader{Inputs: item.Inputs, ContextInputs: item.ContextInputs, CallbackData: item.CallbackData}
 		rt := runtimeadapter.NewExecuteRuntime(ctx, w.cfg.Store, invokeCount)
 		logger := w.cfg.Logger.WithField("trace_id", item.TraceID).WithField("plugin_version", item.PluginVersion)
+		logger.WithFields(logrus.Fields{
+			"state":             item.State,
+			"invoke_count":      invokeCount,
+			"callback_received": item.CallbackReceivedAt != nil,
+		}).Info("plugin scheduler run task")
 		if err := executor.ScheduleWithState(item.TraceID, item.PluginVersion, invokeCount, item.State, reader, rt, logger); err != nil {
 			logger.WithError(err).Error("schedule plugin")
 		}
@@ -78,6 +89,11 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 			logger.WithError(err).Error("get schedule after run")
 			continue
 		}
+		logger.WithFields(logrus.Fields{
+			"state":        updated.State,
+			"invoke_count": updated.InvokeCount,
+			"finished":     updated.FinishedAt != nil,
+		}).Info("plugin scheduler task updated")
 		notifyFinish(ctx, logger, updated)
 	}
 	return nil
@@ -88,9 +104,14 @@ func notifyFinish(ctx context.Context, logger *logrus.Entry, schedule *store.Sch
 		return
 	}
 	info := finishcallback.Info{URL: schedule.PluginCallbackURL, Data: schedule.PluginCallbackData}
+	logger.WithFields(logrus.Fields{
+		"state": schedule.State,
+	}).Info("plugin finish callback start")
 	if err := finishcallback.NotifyWithRetry(ctx, http.DefaultClient, info); err != nil {
 		logger.WithError(err).Error("plugin finish callback failed")
+		return
 	}
+	logger.Info("plugin finish callback completed")
 }
 
 func isFinished(state constants.State) bool {

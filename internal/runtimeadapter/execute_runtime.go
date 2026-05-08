@@ -9,6 +9,7 @@ import (
 	"github.com/TencentBlueKing/bk-plugin-framework-go/runtime"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/callback"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/store"
+	"github.com/sirupsen/logrus"
 )
 
 type ExecuteRuntime struct {
@@ -62,6 +63,13 @@ func (r *ExecuteRuntime) PrepareCallback(traceID string, version string, invokeC
 		return runtime.CallbackPreparation{}, err
 	}
 	r.preparedCallback = prepared
+	logrus.WithFields(logrus.Fields{
+		"trace_id":                 traceID,
+		"plugin_version":           version,
+		"invoke_count":             invokeCount,
+		"callback_timeout_seconds": int(timeout.Seconds()),
+		"callback_url_set":         prepared.preparation.URL != "",
+	}).Info("plugin callback prepared")
 	return prepared.preparation, nil
 }
 
@@ -74,7 +82,15 @@ func (r *ExecuteRuntime) SetCallback(traceID string, version string, invokeCount
 			return err
 		}
 	}
-	return r.store.MarkCallback(r.ctx, traceID, invokeCount, prepared.tokenHash, prepared.expiresAt, prepared.preparation.URL)
+	if err := r.store.MarkCallback(r.ctx, traceID, invokeCount, prepared.tokenHash, prepared.expiresAt, prepared.preparation.URL); err != nil {
+		return err
+	}
+	logrus.WithFields(logrus.Fields{
+		"trace_id":       traceID,
+		"plugin_version": version,
+		"invoke_count":   invokeCount,
+	}).Info("plugin callback state persisted")
+	return nil
 }
 
 func (r *ExecuteRuntime) issueCallback(traceID string, timeout time.Duration) (*preparedCallback, error) {
