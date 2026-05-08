@@ -34,7 +34,7 @@ hub.MustInstall(MyPlugin{}, ContextInputs{}, Outputs{}, inputsForm)
 添加新的 runtime module：
 
 ```bash
-go get github.com/TencentBlueKing/bk-plugin-runtime-go@v0.1.0
+go get github.com/TencentBlueKing/bk-plugin-runtime-go@v0.1.1
 go mod tidy
 ```
 
@@ -81,6 +81,12 @@ Phase 1 runtime 支持这些命令：
 ```go
 func (p MyPlugin) Execute(ctx *kit.Context) error {
     if ctx.InvokeCount() == 1 {
+        callback, err := ctx.PrepareCallback(30 * time.Minute)
+        if err != nil {
+            return err
+        }
+        // 将 callback.URL 传给第三方系统，第三方任务完成后 POST 这个地址。
+        _ = callback.URL
         ctx.WaitCallback(30 * time.Minute)
         return nil
     }
@@ -95,12 +101,12 @@ func (p MyPlugin) Execute(ctx *kit.Context) error {
 }
 ```
 
-runtime 会在 `invoke` 响应中返回 `callback_url`。第三方系统向该 URL `POST` JSON 后，worker 会重新拉起插件，并通过 `ctx.ReadCallback` 读取回调数据。
+`ctx.PrepareCallback` 会提前生成 callback URL，便于插件传给第三方系统；runtime 也会在 `invoke` 响应中返回同一个 `callback_url`。第三方系统向该 URL `POST` JSON 后，worker 会重新拉起插件，并通过 `ctx.ReadCallback` 读取回调数据。
 
 相关环境变量：
 
 - `BK_PLUGIN_CALLBACK_TOKEN_SECRET`：callback token 签名密钥。
-- `BK_PLUGIN_CALLBACK_BASE_URL`：对外展示的 callback URL 前缀；未配置时返回相对路径。
+- `BK_PLUGIN_CALLBACK_BASE_URL`：对外展示的 callback URL 前缀；未配置时会优先根据本次 `invoke` 请求的 Host 和协议推导。
 
 ## 插件完成回调
 
