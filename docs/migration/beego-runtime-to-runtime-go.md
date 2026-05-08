@@ -34,7 +34,7 @@ hub.MustInstall(MyPlugin{}, ContextInputs{}, Outputs{}, inputsForm)
 添加新的 runtime module：
 
 ```bash
-go get github.com/TencentBlueKing/bk-plugin-runtime-go@v0.1.1
+go get github.com/TencentBlueKing/bk-plugin-runtime-go@v0.1.2
 go mod tidy
 ```
 
