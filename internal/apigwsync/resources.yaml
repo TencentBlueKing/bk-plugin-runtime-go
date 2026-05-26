@@ -1,0 +1,250 @@
+openapi: 3.0.3
+info:
+  title: 'BK Plugin API'
+  version: '1.0.0'
+  description: '蓝鲸插件服务 API（Go 版 runtime 自带模板）'
+
+paths:
+
+  /callback/{token}:
+    post:
+      operationId: callback
+      summary: 插件回调
+      description: 第三方系统通知插件异步任务已完成
+      tags:
+        - callback
+      parameters:
+        - in: path
+          name: token
+          schema:
+            type: string
+          required: true
+          description: 回调令牌
+      responses:
+        '200':
+          description: '回调成功'
+      x-bk-apigateway-resource:
+        isPublic: true
+        matchSubpath: false
+        backend:
+          type: HTTP
+          name: default
+          method: post
+          path: /bk_plugin/callback/{token}
+          matchSubpath: false
+          timeout: 0
+          upstreams: {}
+          transformHeaders: {}
+        pluginConfigs: []
+        allowApplyPermission: true
+        authConfig:
+          userVerifiedRequired: false
+          appVerifiedRequired: true
+          resourcePermissionRequired: true
+        disabledStages: []
+        descriptionEn: plugin callback
+
+  /invoke/{version}:
+    post:
+      operationId: invoke
+      summary: 调用指定版本插件
+      description: 调用指定版本的插件执行任务
+      tags:
+        - invoke
+      parameters:
+        - in: path
+          name: version
+          schema:
+            type: string
+          required: true
+          description: 插件版本号
+      responses:
+        '200':
+          description: '调用成功'
+      x-bk-apigateway-resource:
+        isPublic: true
+        matchSubpath: false
+        backend:
+          type: HTTP
+          name: default
+          method: post
+          path: /bk_plugin/invoke/{version}
+          matchSubpath: false
+          timeout: 0
+          upstreams: {}
+          transformHeaders: {}
+        pluginConfigs: []
+        allowApplyPermission: true
+        authConfig:
+          userVerifiedRequired: false
+          appVerifiedRequired: true
+          resourcePermissionRequired: true
+        disabledStages: []
+        descriptionEn: Invoke specific version plugin
+
+  /schedule/{trace_id}:
+    get:
+      operationId: schedule
+      summary: 查询插件调度状态
+      description: 调用方根据 trace_id 查询插件执行状态
+      tags:
+        - schedule
+      parameters:
+        - in: path
+          name: trace_id
+          schema:
+            type: string
+          required: true
+          description: 调用跟踪 ID
+      responses:
+        '200':
+          description: '查询成功'
+      x-bk-apigateway-resource:
+        isPublic: true
+        matchSubpath: false
+        backend:
+          type: HTTP
+          name: default
+          method: get
+          path: /bk_plugin/schedule/{trace_id}
+          matchSubpath: false
+          timeout: 0
+          upstreams: {}
+          transformHeaders: {}
+        pluginConfigs: []
+        allowApplyPermission: true
+        authConfig:
+          userVerifiedRequired: false
+          appVerifiedRequired: true
+          resourcePermissionRequired: true
+        disabledStages: []
+        descriptionEn: Query plugin schedule
+
+  /meta:
+    get:
+      operationId: meta
+      summary: 插件元数据
+      description: 返回插件应用注册的版本信息和运行时元数据
+      tags:
+        - meta
+      responses:
+        '200':
+          description: '查询成功'
+      x-bk-apigateway-resource:
+        isPublic: true
+        matchSubpath: false
+        backend:
+          type: HTTP
+          name: default
+          method: get
+          path: /bk_plugin/meta
+          matchSubpath: false
+          timeout: 0
+          upstreams: {}
+          transformHeaders: {}
+        pluginConfigs: []
+        allowApplyPermission: true
+        authConfig:
+          userVerifiedRequired: false
+          appVerifiedRequired: true
+          resourcePermissionRequired: false
+        disabledStages: []
+        descriptionEn: Plugin meta
+
+  /detail/{version}:
+    get:
+      operationId: detail
+      summary: 插件详情
+      description: 返回指定版本插件的 schema 与表单等元数据
+      tags:
+        - detail
+      parameters:
+        - in: path
+          name: version
+          schema:
+            type: string
+          required: true
+          description: 插件版本号
+      responses:
+        '200':
+          description: '查询成功'
+      x-bk-apigateway-resource:
+        isPublic: true
+        matchSubpath: false
+        backend:
+          type: HTTP
+          name: default
+          method: get
+          path: /bk_plugin/detail/{version}
+          matchSubpath: false
+          timeout: 0
+          upstreams: {}
+          transformHeaders: {}
+        pluginConfigs: []
+        allowApplyPermission: true
+        authConfig:
+          userVerifiedRequired: false
+          appVerifiedRequired: true
+          resourcePermissionRequired: false
+        disabledStages: []
+        descriptionEn: Plugin detail
+
+  /plugin_api_dispatch:
+    post:
+      operationId: plugin_api_dispatch
+      summary: 插件 API 分发
+      description: 将调用方请求分发到插件自定义 API
+      tags:
+        - plugin_api_dispatch
+      responses:
+        '200':
+          description: '分发成功'
+      x-bk-apigateway-resource:
+        isPublic: true
+        matchSubpath: false
+        backend:
+          type: HTTP
+          name: default
+          method: post
+          path: /bk_plugin/plugin_api_dispatch
+          matchSubpath: false
+          timeout: 0
+          upstreams: {}
+          transformHeaders: {}
+        pluginConfigs: []
+        allowApplyPermission: true
+        authConfig:
+          userVerifiedRequired: false
+          appVerifiedRequired: true
+          resourcePermissionRequired: true
+        disabledStages: []
+        descriptionEn: Plugin API dispatch
+
+  /bk_plugin/plugin_api/:
+    x-bk-apigateway-method-any:
+      operationId: plugin_api
+      summary: 插件自定义 API
+      description: 插件自定义 API 入口，支持子路径匹配
+      tags:
+        - plugin_api
+      responses:
+        default:
+          description: '插件自定义响应'
+      x-bk-apigateway-resource:
+        isPublic: true
+        allowApplyPermission: true
+        matchSubpath: true
+        backend:
+          type: HTTP
+          name: default
+          method: any
+          path: /bk_plugin/plugin_api/
+          matchSubpath: true
+          timeout: 0
+          upstreams: {}
+          transformHeaders: {}
+        authConfig:
+          userVerifiedRequired: true
+          appVerifiedRequired: false
+        disabledStages: []
+        descriptionEn: Plugin custom API entry

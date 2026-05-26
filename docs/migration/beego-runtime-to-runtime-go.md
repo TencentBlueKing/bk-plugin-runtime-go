@@ -56,9 +56,73 @@ Phase 1 runtime 支持这些命令：
 
 - `server`：启动插件 HTTP 服务。
 - `worker`：启动 poll 调度 worker。
-- `syncapigw`：保留兼容命令，生产 APIGW 同步能力在后续阶段完善。
+- `syncapigw`：把 runtime 自带的 7 个标准资源（meta/detail/invoke/schedule/callback/plugin_api_dispatch/plugin_api）和插件提供的 `definition.yaml` 同步到 BlueKing API Gateway，并发布版本。详见下文「网关同步」。
+- `fetch-apigw-public-key`：拉取网关 RSA 公钥并写入本地文件，供运行时校验 `X-Bkapi-JWT`。
 - `collectstatics`：兼容旧命令，在新 runtime 中是 no-op。
 - `version`：输出 runtime 版本。
+
+## 网关同步
+
+> 这一步对应 Python 框架的 `sync_apigateway_if_changed` + `fetch_apigw_public_key` 管理命令。Go 版 runtime 之前没有真正实现，会让生产环境的 callback 因为默认 `userVerifiedRequired: true` 被网关拦截。
+
+runtime 内嵌了 `internal/apigwsync/resources.yaml`，声明了所有标准资源的鉴权配置。其中：
+
+- `/callback/{token}`、`/invoke/{version}`、`/schedule/{trace_id}`、`/plugin_api_dispatch`：`userVerifiedRequired: false` + `appVerifiedRequired: true` + `resourcePermissionRequired: true`（允许第三方系统通过应用凭证调用，但仍要先申请权限）。
+- `/meta`、`/detail/{version}`：`userVerifiedRequired: false` + `appVerifiedRequired: true`，只校验应用身份。
+- `/bk_plugin/plugin_api/`：`userVerifiedRequired: true`，沿用 Python 版策略，由插件作者自行决定是否对外暴露。
+
+插件应用需要在仓库根目录提供 `definition.yaml`，描述网关元数据（描述、stage、grant_permissions 等）；模板使用 SDK 自带的 pongo2 上下文，可访问 `settings.BK_APIGW_NAME`、`settings.BK_APP_CODE`、`environ.<ANY_ENV>`。最小示例：
+
+```yaml
+apigateway:
+  description: "示例插件"
+  is_public: true
+  api_type: 10
+  maintainers:
+    - "{{ environ.BK_APIGW_MAINTAINER | default:settings.BK_APP_CODE }}"
+
+stages:
+  - name: prod
+    proxy_http:
+      timeout: 60
+      upstreams:
+        loadbalance: roundrobin
+        hosts:
+          - host: "{{ environ.BK_PLUGIN_BACKEND_HOST }}"
+            weight: 100
+
+grant_permissions:
+  - bk_app_code: "bk_sops"
+    grant_dimension: "api"
+```
+
+把同步挂到 PaaS preRelease 钩子（spec_version 2 写法）：
+
+```yaml
+modules:
+  default:
+    scripts:
+      pre_release_hook: bash bin/sync_apigateway.sh
+```
+
+`bin/sync_apigateway.sh` 推荐写法：
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+new-go-plugin syncapigw --definition definition.yaml
+new-go-plugin fetch-apigw-public-key --out apigw.pub
+```
+
+需要的环境变量：
+
+- `BKPAAS_APP_ID` / `BKPAAS_APP_SECRET`（PaaS 自动注入）：调用 manager API 的应用凭证。
+- `BK_API_URL_TMPL`：网关地址模板，例如 `http://bkapi.example.com/api/{api_name}`。
+- `BK_APIGW_NAME`（可选）：网关名，默认与 `BKPAAS_APP_ID` 相同。
+- `BK_APIGW_RELEASE_VERSION`（可选）：资源版本号，默认 `v<UTC时间戳>`。
+- `BK_APIGW_MAINTAINER`、`BK_PLUGIN_BACKEND_HOST` 等由 `definition.yaml` 模板使用，按需自定义。
+
+`syncapigw` 默认 *不会* 删除网关上多余的资源。如果你确认要把网关收敛到 runtime 声明的 7 个资源，加 `--delete-unknown`。
 
 ## 当前支持范围
 
