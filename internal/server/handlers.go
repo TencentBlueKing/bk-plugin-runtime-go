@@ -132,7 +132,7 @@ func (h Handler) Invoke(c *gin.Context) {
 		logger.WithError(err).WithField("state", constants.StateFail).Error("plugin invoke execute failed")
 		_ = h.store.MarkFail(c.Request.Context(), traceID, 1, err.Error())
 		if saved, getErr := h.store.Get(c.Request.Context(), traceID); getErr == nil {
-			h.notifyFinish(c.Request.Context(), saved)
+			go h.notifyFinish(context.Background(), saved)
 		}
 		httpx.OK(c, gin.H{"trace_id": traceID, "state": constants.StateFail})
 		return
@@ -146,7 +146,9 @@ func (h Handler) Invoke(c *gin.Context) {
 		httpx.Error(c, http.StatusInternalServerError, 50000, err.Error())
 		return
 	}
-	h.notifyFinish(c.Request.Context(), saved)
+	// Fire finish-callback in background so the HTTP response is never blocked
+	// by a slow or unreachable callback URL.
+	go h.notifyFinish(context.Background(), saved)
 	logger.WithFields(logrus.Fields{
 		"state":             saved.State,
 		"invoke_count":      saved.InvokeCount,

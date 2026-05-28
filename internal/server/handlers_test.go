@@ -265,9 +265,12 @@ func TestInvokeScopeDenied(t *testing.T) {
 
 func TestInvokeFinishCallback(t *testing.T) {
 	var got store.JSONMap
+	// notifyFinish runs in a goroutine; use a channel to wait for the HTTP callback.
+	callbackReceived := make(chan struct{})
 	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
 		_, _ = w.Write([]byte(`{"result": true}`))
+		close(callbackReceived)
 	}))
 	defer callbackServer.Close()
 
@@ -286,5 +289,11 @@ func TestInvokeFinishCallback(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/bk_plugin/invoke/9.9.1", body)
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
+
+	select {
+	case <-callbackReceived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("finish callback goroutine did not fire within 5s")
+	}
 	require.Equal(t, store.JSONMap{"trace_id": "from-caller"}, got)
 }

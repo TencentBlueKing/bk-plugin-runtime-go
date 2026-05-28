@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	contextKey = "plugin_callback_info"
-	retryTimes = 3
-	retryDelay = 500 * time.Millisecond
+	contextKey  = "plugin_callback_info"
+	retryTimes  = 3
+	retryDelay  = 500 * time.Millisecond
+	httpTimeout = 10 * time.Second
 )
 
 type Info struct {
@@ -47,13 +48,17 @@ func NotifyWithRetry(ctx context.Context, client *http.Client, info Info) error 
 	if info.URL == "" {
 		return nil
 	}
-	if client == nil {
-		client = http.DefaultClient
+	// Always use a client with an explicit per-request timeout so that a slow
+	// or unreachable finish-callback URL cannot stall the caller indefinitely.
+	timeoutClient := &http.Client{Timeout: httpTimeout}
+	if client != nil && client != http.DefaultClient {
+		// Honour a custom transport from the caller, but still enforce the timeout.
+		timeoutClient = &http.Client{Transport: client.Transport, Timeout: httpTimeout}
 	}
 
 	var lastErr error
 	for i := 0; i < retryTimes; i++ {
-		if err := Notify(ctx, client, info); err != nil {
+		if err := Notify(ctx, timeoutClient, info); err != nil {
 			lastErr = err
 			if i == retryTimes-1 {
 				break
