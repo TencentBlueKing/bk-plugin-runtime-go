@@ -29,9 +29,6 @@ func init() {
 				log.Fatalf("init runtime: %s", err)
 			}
 			scheduleStore := store.NewGormStore(database.Client(ctx))
-			if err := scheduleStore.AutoMigrate(ctx); err != nil {
-				log.Fatalf("migrate plugin schedules: %s", err)
-			}
 			worker := scheduler.NewWorker(scheduler.Config{
 				Store:    scheduleStore,
 				WorkerID: uuid.NewString(),

@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
 
 	"github.com/TencentBlueKing/blueapps-go/pkg/cache/memory"
 	"github.com/TencentBlueKing/blueapps-go/pkg/config"
@@ -90,7 +92,46 @@ func initLoggers(cfg *config.LogConfig) error {
 	if err := initLogger("gorm", log.GormLogLevel, "json", "file", filepath.Join(cfg.Dir, "gorm.log")); err != nil {
 		return err
 	}
-	return initLogger("gin", log.GinLogLevel, "json", "file", filepath.Join(cfg.Dir, "gin.log"))
+	if err := initLogger("gin", log.GinLogLevel, "json", "file", filepath.Join(cfg.Dir, "gin.log")); err != nil {
+		return err
+	}
+	// Route the global logrus logger (used by bk-plugin-runtime-go handlers / executor)
+	// to the same destination as the blueapps "default" slog logger, so that runtime
+	// application logs appear in default.log alongside framework boot logs.
+	return initLogrus(cfg)
+}
+
+// initLogrus configures the global logrus.StandardLogger() to write to the same
+// file (or stdout) as the blueapps "default" slog logger, using a JSON format
+// that matches the blueapps log-platform field naming convention.
+func initLogrus(cfg *config.LogConfig) error {
+	level, err := logrus.ParseLevel(cfg.Level)
+	if err != nil {
+		level = logrus.InfoLevel
+	}
+	logrus.SetLevel(level)
+	logrus.SetFormatter(&logrus.JSONFormatter{
+		TimestampFormat: time.RFC3339Nano,
+		FieldMap: logrus.FieldMap{
+			logrus.FieldKeyTime:  "time",
+			logrus.FieldKeyLevel: "levelname",
+			logrus.FieldKeyMsg:   "message",
+		},
+	})
+	if cfg.ForceToStdout {
+		logrus.SetOutput(os.Stdout)
+		return nil
+	}
+	f, err := os.OpenFile(
+		filepath.Join(cfg.Dir, "default.log"),
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
+		0o644,
+	)
+	if err != nil {
+		return errors.Wrapf(err, "open logrus output file")
+	}
+	logrus.SetOutput(f)
+	return nil
 }
 
 func initLogger(name string, level string, handler string, writer string, filename string) error {
