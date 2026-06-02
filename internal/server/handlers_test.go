@@ -70,6 +70,7 @@ func newTestRouter(t *testing.T) (*gin.Engine, *store.GormStore) {
 
 func newTestRouterWithOptions(t *testing.T, opts hub.Options) (*gin.Engine, *store.GormStore) {
 	t.Helper()
+	t.Setenv("BK_PLUGIN_CALLBACK_TOKEN_SECRET", "test-callback-secret")
 	gin.SetMode(gin.TestMode)
 	hub.Configure(opts)
 	t.Cleanup(func() {

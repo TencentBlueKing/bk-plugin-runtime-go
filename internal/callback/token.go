@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -19,11 +20,15 @@ type TokenManager struct {
 	now    func() time.Time
 }
 
-func NewTokenManager(secret string) *TokenManager {
+// NewTokenManager creates a TokenManager with the given HMAC secret.
+// Returns an error if secret is empty — callers must set
+// BK_PLUGIN_CALLBACK_TOKEN_SECRET; there is no built-in fallback to prevent
+// accidental use of a well-known default in production deployments.
+func NewTokenManager(secret string) (*TokenManager, error) {
 	if secret == "" {
-		secret = "bk-plugin-runtime-dev-secret"
+		return nil, errors.New("callback token secret must not be empty; set BK_PLUGIN_CALLBACK_TOKEN_SECRET")
 	}
-	return &TokenManager{secret: []byte(secret), now: time.Now}
+	return &TokenManager{secret: []byte(secret), now: time.Now}, nil
 }
 
 func (m *TokenManager) Issue(traceID string, ttl time.Duration) (token string, hash string, expiresAt time.Time, err error) {

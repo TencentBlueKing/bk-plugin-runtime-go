@@ -190,7 +190,12 @@ func (h Handler) Callback(c *gin.Context) {
 	tokenHash := callback.Hash(token)
 	logger := h.logger.WithFields(requestLogFields(c.Request)).WithField("callback_token_hash", shortHash(tokenHash))
 	logger.Info("plugin callback request received")
-	manager := callback.NewTokenManager(os.Getenv("BK_PLUGIN_CALLBACK_TOKEN_SECRET"))
+	manager, err := callback.NewTokenManager(os.Getenv("BK_PLUGIN_CALLBACK_TOKEN_SECRET"))
+	if err != nil {
+		logger.WithError(err).Error("callback token manager init failed: BK_PLUGIN_CALLBACK_TOKEN_SECRET not set")
+		httpx.Error(c, http.StatusInternalServerError, 50000, err.Error())
+		return
+	}
 	traceID, err := manager.Verify(token)
 	if err != nil {
 		logger.WithError(err).Warn("plugin callback token rejected")

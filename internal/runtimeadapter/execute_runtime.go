@@ -2,6 +2,7 @@ package runtimeadapter
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -36,11 +37,15 @@ func NewExecuteRuntimeWithCallbackBaseURL(ctx context.Context, scheduleStore sto
 	if baseURL == "" {
 		baseURL = strings.TrimRight(callbackBaseURL, "/")
 	}
+	// NewTokenManager returns (nil, error) when the secret is empty.
+	// We store nil here; PrepareCallback/issueCallback will fail with a clear
+	// error if the plugin tries to use callback flow without the env var set.
+	tokenManager, _ := callback.NewTokenManager(os.Getenv("BK_PLUGIN_CALLBACK_TOKEN_SECRET"))
 	return &ExecuteRuntime{
 		ctx:             ctx,
 		store:           scheduleStore,
 		invokeCount:     invokeCount,
-		tokenManager:    callback.NewTokenManager(os.Getenv("BK_PLUGIN_CALLBACK_TOKEN_SECRET")),
+		tokenManager:    tokenManager,
 		callbackBaseURL: baseURL,
 	}
 }
@@ -94,6 +99,9 @@ func (r *ExecuteRuntime) SetCallback(traceID string, version string, invokeCount
 }
 
 func (r *ExecuteRuntime) issueCallback(traceID string, timeout time.Duration) (*preparedCallback, error) {
+	if r.tokenManager == nil {
+		return nil, fmt.Errorf("callback token manager is not available: BK_PLUGIN_CALLBACK_TOKEN_SECRET must be set")
+	}
 	token, tokenHash, expiresAt, err := r.tokenManager.Issue(traceID, timeout)
 	if err != nil {
 		return nil, err
