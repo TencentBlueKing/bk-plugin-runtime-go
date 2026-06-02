@@ -20,6 +20,7 @@ type ExecuteRuntime struct {
 	tokenManager     *callback.TokenManager
 	callbackBaseURL  string
 	preparedCallback *preparedCallback
+	logger           *logrus.Entry
 }
 
 type preparedCallback struct {
@@ -28,14 +29,17 @@ type preparedCallback struct {
 	expiresAt   time.Time
 }
 
-func NewExecuteRuntime(ctx context.Context, scheduleStore store.ScheduleStore, invokeCount int) *ExecuteRuntime {
-	return NewExecuteRuntimeWithCallbackBaseURL(ctx, scheduleStore, invokeCount, "")
+func NewExecuteRuntime(ctx context.Context, scheduleStore store.ScheduleStore, invokeCount int, logger *logrus.Entry) *ExecuteRuntime {
+	return NewExecuteRuntimeWithCallbackBaseURL(ctx, scheduleStore, invokeCount, "", logger)
 }
 
-func NewExecuteRuntimeWithCallbackBaseURL(ctx context.Context, scheduleStore store.ScheduleStore, invokeCount int, callbackBaseURL string) *ExecuteRuntime {
+func NewExecuteRuntimeWithCallbackBaseURL(ctx context.Context, scheduleStore store.ScheduleStore, invokeCount int, callbackBaseURL string, logger *logrus.Entry) *ExecuteRuntime {
 	baseURL := strings.TrimRight(os.Getenv("BK_PLUGIN_CALLBACK_BASE_URL"), "/")
 	if baseURL == "" {
 		baseURL = strings.TrimRight(callbackBaseURL, "/")
+	}
+	if logger == nil {
+		logger = logrus.NewEntry(logrus.StandardLogger())
 	}
 	// NewTokenManager returns (nil, error) when the secret is empty.
 	// We store nil here; PrepareCallback/issueCallback will fail with a clear
@@ -47,6 +51,7 @@ func NewExecuteRuntimeWithCallbackBaseURL(ctx context.Context, scheduleStore sto
 		invokeCount:     invokeCount,
 		tokenManager:    tokenManager,
 		callbackBaseURL: baseURL,
+		logger:          logger,
 	}
 }
 
@@ -68,11 +73,13 @@ func (r *ExecuteRuntime) PrepareCallback(traceID string, version string, invokeC
 		return runtime.CallbackPreparation{}, err
 	}
 	r.preparedCallback = prepared
-	logrus.WithFields(logrus.Fields{
+	r.logger.WithFields(logrus.Fields{
 		"trace_id":                 traceID,
 		"plugin_version":           version,
 		"invoke_count":             invokeCount,
 		"callback_timeout_seconds": int(timeout.Seconds()),
+		"callback_token_hash":      shortTokenHash(prepared.tokenHash),
+		"callback_expires_at":      prepared.expiresAt.UTC().Format(time.RFC3339),
 		"callback_url_set":         prepared.preparation.URL != "",
 	}).Info("plugin callback prepared")
 	return prepared.preparation, nil
@@ -90,12 +97,21 @@ func (r *ExecuteRuntime) SetCallback(traceID string, version string, invokeCount
 	if err := r.store.MarkCallback(r.ctx, traceID, invokeCount, prepared.tokenHash, prepared.expiresAt, prepared.preparation.URL); err != nil {
 		return err
 	}
-	logrus.WithFields(logrus.Fields{
-		"trace_id":       traceID,
-		"plugin_version": version,
-		"invoke_count":   invokeCount,
+	r.logger.WithFields(logrus.Fields{
+		"trace_id":            traceID,
+		"plugin_version":      version,
+		"invoke_count":        invokeCount,
+		"callback_token_hash": shortTokenHash(prepared.tokenHash),
+		"callback_expires_at": prepared.expiresAt.UTC().Format(time.RFC3339),
 	}).Info("plugin callback state persisted")
 	return nil
+}
+
+func shortTokenHash(hash string) string {
+	if len(hash) <= 12 {
+		return hash
+	}
+	return hash[:12]
 }
 
 func (r *ExecuteRuntime) issueCallback(traceID string, timeout time.Duration) (*preparedCallback, error) {

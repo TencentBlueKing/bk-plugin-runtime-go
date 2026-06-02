@@ -1,0 +1,33 @@
+{# Default definition.yaml for bk-plugin-runtime-go. Embedded by sync.go and  #}
+{# rendered with the same pongo2 settings/environ context as resources.yaml.  #}
+{# Behaviour mirrors bk-plugin-framework-python's apigw_manager-supplied      #}
+{# defaults: an end-user typically does NOT need to provide their own         #}
+{# definition.yaml. If a `definition.yaml` exists in the working directory at #}
+{# sync time it fully replaces this template (D3=b).                          #}
+
+apigateway:
+  description: "{{ settings.BK_APIGW_NAME }} - BK Plugin gateway"
+  description_en: "{{ settings.BK_APIGW_NAME }} - BK Plugin gateway"
+  is_public: {% if settings.BK_APIGW_IS_PUBLIC %}true{% else %}false{% endif %}
+  api_type: {{ settings.BK_APIGW_IS_OFFICIAL }}
+  maintainers:
+{% for m in settings.BK_APIGW_MAINTAINERS %}    - "{{ m }}"
+{% endfor %}
+
+stages:
+  - name: "{{ settings.BK_APIGW_STAGE_NAME }}"
+    description: "{{ settings.BK_APIGW_STAGE_NAME }} stage"
+    description_en: "{{ settings.BK_APIGW_STAGE_NAME }} stage"
+    proxy_http:
+      timeout: {{ settings.BK_APIGW_DEFAULT_TIMEOUT }}
+      upstreams:
+        loadbalance: "roundrobin"
+        hosts:
+          - host: "{{ settings.BK_PLUGIN_APIGW_BACKEND_HOST }}"
+            weight: 100
+
+grant_permissions:
+  # 默认放行标准运维（bk_sops），保证 SOPS 调用插件的链路开箱即用。
+  # 如需放行更多调用方，请在插件仓库根目录提供自定义 definition.yaml 完全覆盖此默认模板。
+  - bk_app_code: "bk_sops"
+    grant_dimension: "api"

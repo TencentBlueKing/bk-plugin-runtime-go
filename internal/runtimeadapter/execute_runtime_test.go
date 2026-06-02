@@ -28,7 +28,7 @@ func TestPrepareCallbackIsReusedBySetCallback(t *testing.T) {
 		NextRunAt:     time.Now().UTC(),
 	}))
 
-	rt := NewExecuteRuntime(ctx, s, 1)
+	rt := NewExecuteRuntime(ctx, s, 1, nil)
 	preparation, err := rt.PrepareCallback("trace-prepare-callback", "1.0.0", 1, time.Hour)
 	require.NoError(t, err)
 	require.NotEmpty(t, preparation.ID)

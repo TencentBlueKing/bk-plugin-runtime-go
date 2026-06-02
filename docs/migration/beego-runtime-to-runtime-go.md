@@ -56,7 +56,7 @@ Phase 1 runtime 支持这些命令：
 
 - `server`：启动插件 HTTP 服务。
 - `worker`：启动 poll 调度 worker。
-- `syncapigw`：把 runtime 自带的 7 个标准资源（meta/detail/invoke/schedule/callback/plugin_api_dispatch/plugin_api）和插件提供的 `definition.yaml` 同步到 BlueKing API Gateway，并发布版本。详见下文「网关同步」。
+- `syncapigw`：把 runtime 自带的 5 个标准资源（callback/invoke/plugin_api/openapi/plugin_api_dispatch）和插件提供的 `definition.yaml` 同步到 BlueKing API Gateway，并发布版本。详见下文「网关同步」。
 - `fetch-apigw-public-key`：拉取网关 RSA 公钥并写入本地文件，供运行时校验 `X-Bkapi-JWT`。
 - `collectstatics`：兼容旧命令，在新 runtime 中是 no-op。
 - `version`：输出 runtime 版本。
@@ -64,39 +64,92 @@ Phase 1 runtime 支持这些命令：
 ## 网关同步
 
 > 这一步对应 Python 框架的 `sync_apigateway_if_changed` + `fetch_apigw_public_key` 管理命令。Go 版 runtime 之前没有真正实现，会让生产环境的 callback 因为默认 `userVerifiedRequired: true` 被网关拦截。
+>
+> v0.2.2 起 runtime 的资源清单、环境变量、stage 推导逻辑全部对齐 `bk-plugin-framework-python`，迁移现有 Python 插件运行时无需重新学一套约定，PaaS 注入的环境变量也能直接复用。
 
-runtime 内嵌了 `internal/apigwsync/resources.yaml`，声明了所有标准资源的鉴权配置。其中：
+### 内嵌资源清单（5 个，与 Python 完全一致）
 
-- `/callback/{token}`、`/invoke/{version}`、`/schedule/{trace_id}`、`/plugin_api_dispatch`：`userVerifiedRequired: false` + `appVerifiedRequired: true` + `resourcePermissionRequired: true`（允许第三方系统通过应用凭证调用，但仍要先申请权限）。
-- `/meta`、`/detail/{version}`：`userVerifiedRequired: false` + `appVerifiedRequired: true`，只校验应用身份。
-- `/bk_plugin/plugin_api/`：`userVerifiedRequired: true`，沿用 Python 版策略，由插件作者自行决定是否对外暴露。
+runtime 内嵌了 `internal/apigwsync/resources.yaml`，对应 Python 框架的 `bk_plugin_framework/services/bpf_service/management/commands/support-files/resources.yaml`：
 
-插件应用需要在仓库根目录提供 `definition.yaml`，描述网关元数据（描述、stage、grant_permissions 等）；模板使用 SDK 自带的 pongo2 上下文，可访问 `settings.BK_APIGW_NAME`、`settings.BK_APP_CODE`、`environ.<ANY_ENV>`。最小示例：
+| 路径 | 鉴权 | 说明 |
+| --- | --- | --- |
+| `/callback/{token}/` | `userVerifiedRequired=false`、`appVerifiedRequired=true`、`resourcePermissionRequired=true` | 第三方系统通知插件异步任务已完成 |
+| `/invoke/{version}/` | 同上 | 调用方调用指定版本插件 |
+| `/bk_plugin/plugin_api/` | `userVerifiedRequired=true`，`matchSubpath=true` | 插件自定义 API（前端调用） |
+| `/bk_plugin/openapi/` | `userVerifiedRequired=false`、`appVerifiedRequired=true`，`matchSubpath=true` | 插件 OpenAPI（第三方系统调用） |
+| `/plugin_api_dispatch` | `userVerifiedRequired=false`、`appVerifiedRequired=true`、`resourcePermissionRequired=true` | 插件 API 分发 |
+
+> Plugin runtime 的 `/meta`、`/detail/{version}`、`/schedule/{trace_id}` 是 SOPS / 平台的内部直连接口，**不会**注册到网关，与 Python 版策略保持一致。
+
+资源 YAML 内嵌的是 pongo2 模板，runtime 在调用 SDK 之前会用同一份 `settings`/`environ` 上下文先渲染再上送，因此当应用部署在子路径下（`BKPAAS_DEFAULT_PREALLOCATED_URLS` 的 path 段非空）时，`backend.path` 会自动加上前缀。
+
+### 环境变量约定
+
+完全对齐 `bk_plugin_runtime/config/default.py`：
+
+| 用途 | 环境变量 | 默认值 |
+| --- | --- | --- |
+| 网关名 | `BKPAAS_BK_PLUGIN_APIGW_NAME`（首选）→ `BK_APIGW_NAME` → `BKPAAS_APP_ID` | 空（必须有一个） |
+| 应用凭证 | `BKPAAS_APP_ID` / `BKPAAS_APP_SECRET` | 空 |
+| Manager 端点模板 | `BK_APIGW_MANAGER_URL_TMPL` → `BK_APIGW_MANAGER_URL_TEMPL` → `BK_API_URL_TMPL` | 空 |
+| Stage 名 | 由 `BKPAAS_ENVIRONMENT` 推：`stag` → `stag`，其他 → `prod`；可被 `BK_APIGW_STAGE_NAME` 覆盖 | `prod` |
+| Stage 后端 | 解析 `BKPAAS_DEFAULT_PREALLOCATED_URLS[<env>]` 得到 host / sub_path / scheme | 空（host 由 `definition.yaml` 兜底） |
+| 维护人列表 | `BK_APIGW_MAINTAINERS`（逗号分隔） | `admin` |
+| 是否公开 | `BK_APIGW_IS_PUBLIC` | `true` |
+| api_type | `BK_APIGW_IS_OFFICIAL`：`true` → `1`，否则 `10` | `10` |
+| 资源版本 | `BK_APIGW_RELEASE_VERSION` + `+<UTC时间戳>` | `1.0.0+20260527181542`（每次部署自动唯一，避免"版本已存在"4xx；想要确定性版本号可让 `BK_APIGW_RELEASE_VERSION` 自带 build metadata，例如 `1.2.3+abc123`） |
+| Stage 默认超时 | `BK_APIGW_DEFAULT_TIMEOUT`（秒） | `60` |
+
+`definition.yaml` / `resources.yaml` 的 pongo2 上下文会注入：
+
+- `settings.BK_APIGW_NAME`、`settings.BK_APP_CODE`、`settings.BK_APP_SECRET`
+- `settings.BK_APIGW_STAGE_NAME`
+- `settings.BK_APIGW_MAINTAINERS`（`[]string`，可直接 `{% for %}`）
+- `settings.BK_APIGW_IS_PUBLIC`（bool）
+- `settings.BK_APIGW_IS_OFFICIAL`（int 1 / 10）
+- `settings.BK_APIGW_DEFAULT_TIMEOUT`（int）
+- `settings.BK_PLUGIN_APIGW_BACKEND_HOST` / `BACKEND_NETLOC` / `BACKEND_SUB_PATH` / `BACKEND_SCHEME`
+- `environ.<ANY_ENV_VAR>`（任意环境变量原值）
+
+### `definition.yaml`：默认走内嵌模板
+
+runtime 内嵌了一份默认 `definition.yaml`（位于 `internal/apigwsync/definition.yaml`），默认行为与 Python 框架的 `apigw_manager` 一致：
+
+- 维护人取自 `BK_APIGW_MAINTAINERS`
+- `is_public` / `api_type` / `stage` / 后端 host 全部从环境变量推导
+- `grant_permissions` 默认放行 `bk_sops`，保证 SOPS 调用插件的链路开箱即用
+
+**绝大多数插件不需要在仓库里写 `definition.yaml`。** 只有当你需要对网关元数据做定制（例如多个 stage、给 `bk_itsm` 等其它调用方授权、改 description）时，才在仓库根目录提供 `definition.yaml`，runtime 会用它**完全覆盖**内嵌模板。该文件可以使用同一套 `settings.*` / `environ.*` 上下文：
 
 ```yaml
 apigateway:
   description: "示例插件"
-  is_public: true
-  api_type: 10
+  is_public: {% if settings.BK_APIGW_IS_PUBLIC %}true{% else %}false{% endif %}
+  api_type: {{ settings.BK_APIGW_IS_OFFICIAL }}
   maintainers:
-    - "{{ environ.BK_APIGW_MAINTAINER | default:settings.BK_APP_CODE }}"
+{% for m in settings.BK_APIGW_MAINTAINERS %}    - "{{ m }}"
+{% endfor %}
 
 stages:
-  - name: prod
+  - name: "{{ settings.BK_APIGW_STAGE_NAME }}"
     proxy_http:
-      timeout: 60
+      timeout: {{ settings.BK_APIGW_DEFAULT_TIMEOUT }}
       upstreams:
         loadbalance: roundrobin
         hosts:
-          - host: "{{ environ.BK_PLUGIN_BACKEND_HOST }}"
+          - host: "{{ settings.BK_PLUGIN_APIGW_BACKEND_HOST }}"
             weight: 100
 
 grant_permissions:
   - bk_app_code: "bk_sops"
     grant_dimension: "api"
+  - bk_app_code: "bk_itsm"
+    grant_dimension: "api"
 ```
 
-把同步挂到 PaaS preRelease 钩子（spec_version 2 写法）：
+> Stage backend host 强制从 `BKPAAS_DEFAULT_PREALLOCATED_URLS` 推导。如果该变量不存在或不可解析，runtime 会在调用 manager API **之前**直接报错 `stage backend host is empty`，避免 server 端给出不清晰的 4xx。
+
+### PaaS 钩子
 
 ```yaml
 modules:
@@ -105,24 +158,16 @@ modules:
       pre_release_hook: bash bin/sync_apigateway.sh
 ```
 
-`bin/sync_apigateway.sh` 推荐写法：
+`bin/sync_apigateway.sh`：
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-new-go-plugin syncapigw --definition definition.yaml
-new-go-plugin fetch-apigw-public-key --out apigw.pub
+new-go-plugin syncapigw                    # 默认走内嵌 definition.yaml；插件根目录有 definition.yaml 时自动覆盖
+new-go-plugin fetch-apigw-public-key       # 默认输出 bin/apigw.pub，与 Python 框架一致
 ```
 
-需要的环境变量：
-
-- `BKPAAS_APP_ID` / `BKPAAS_APP_SECRET`（PaaS 自动注入）：调用 manager API 的应用凭证。
-- `BK_API_URL_TMPL`：网关地址模板，例如 `http://bkapi.example.com/api/{api_name}`。
-- `BK_APIGW_NAME`（可选）：网关名，默认与 `BKPAAS_APP_ID` 相同。
-- `BK_APIGW_RELEASE_VERSION`（可选）：资源版本号，默认 `v<UTC时间戳>`。
-- `BK_APIGW_MAINTAINER`、`BK_PLUGIN_BACKEND_HOST` 等由 `definition.yaml` 模板使用，按需自定义。
-
-`syncapigw` 默认 *不会* 删除网关上多余的资源。如果你确认要把网关收敛到 runtime 声明的 7 个资源，加 `--delete-unknown`。
+`syncapigw` 默认 *不会* 删除网关上多余的资源。如果你确认要把网关收敛到 runtime 声明的 5 个资源，加 `--delete-unknown`。
 
 ## 当前支持范围
 
@@ -131,11 +176,8 @@ new-go-plugin fetch-apigw-public-key --out apigw.pub
 - 使用 `ctx.WaitCallback` 的外部回调插件。
 - 插件完成后回调插件使用系统。
 - 基于 `allow_scope` 的业务域限制。
-- `/bk_plugin/plugin_api_dispatch` 和 `/bk_plugin/plugin_api/*`。
-- `/bk_plugin/meta`。
-- `/bk_plugin/detail/:version`。
-- `/bk_plugin/invoke/:version`。
-- `/bk_plugin/schedule/:trace_id`。
+- `/bk_plugin/plugin_api_dispatch` 和 `/bk_plugin/plugin_api/*`、`/bk_plugin/openapi/*`。
+- `/bk_plugin/meta`、`/bk_plugin/detail/:version`、`/bk_plugin/invoke/:version`、`/bk_plugin/schedule/:trace_id`（runtime 内部接口，不走网关）。
 - 基于数据库持久化的 schedule 状态。
 
 ## 外部 callback 插件

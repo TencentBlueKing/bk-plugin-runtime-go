@@ -204,6 +204,7 @@ type sopsE2EEnv struct {
 
 func newSOPSE2EEnv(t *testing.T) sopsE2EEnv {
 	t.Helper()
+	t.Setenv("BK_PLUGIN_CALLBACK_TOKEN_SECRET", "test-callback-secret")
 	gin.SetMode(gin.TestMode)
 	hub.Configure(hub.Options{
 		AllowScope: hub.AllowScope{

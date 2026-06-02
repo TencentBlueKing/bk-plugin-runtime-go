@@ -2,9 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,7 +105,10 @@ func (h Handler) Invoke(c *gin.Context) {
 		"request_base_url":        requestBase,
 		"finish_callback_enabled": pluginCallbackInfo.URL != "",
 	})
-	logger.Info("plugin invoke request accepted")
+	logger.WithFields(logrus.Fields{
+		"context_inputs": jsonCompact(req.Context),
+		"req_json":       jsonCompact(req.Inputs),
+	}).Info("plugin invoke request accepted")
 	schedule := &store.Schedule{
 		TraceID:            traceID,
 		PluginVersion:      versionCode,
@@ -126,7 +133,7 @@ func (h Handler) Invoke(c *gin.Context) {
 	}
 
 	reader := runtimeadapter.Reader{Inputs: req.Inputs, ContextInputs: req.Context}
-	rt := runtimeadapter.NewExecuteRuntimeWithCallbackBaseURL(c.Request.Context(), h.store, 1, requestBase)
+	rt := runtimeadapter.NewExecuteRuntimeWithCallbackBaseURL(c.Request.Context(), h.store, 1, requestBase, logger)
 	state, err := executor.Execute(traceID, versionCode, reader, rt, logger)
 	if err != nil {
 		logger.WithError(err).WithField("state", constants.StateFail).Error("plugin invoke execute failed")
@@ -188,7 +195,11 @@ func (h Handler) Schedule(c *gin.Context) {
 func (h Handler) Callback(c *gin.Context) {
 	token := c.Param("token")
 	tokenHash := callback.Hash(token)
-	logger := h.logger.WithFields(requestLogFields(c.Request)).WithField("callback_token_hash", shortHash(tokenHash))
+	now := time.Now().UTC()
+	logger := h.logger.WithFields(requestLogFields(c.Request)).WithFields(logrus.Fields{
+		"callback_token_hash": shortHash(tokenHash),
+		"request_time":        now.Format(time.RFC3339),
+	})
 	logger.Info("plugin callback request received")
 	manager, err := callback.NewTokenManager(os.Getenv("BK_PLUGIN_CALLBACK_TOKEN_SECRET"))
 	if err != nil {
@@ -198,7 +209,15 @@ func (h Handler) Callback(c *gin.Context) {
 	}
 	traceID, err := manager.Verify(token)
 	if err != nil {
-		logger.WithError(err).Warn("plugin callback token rejected")
+		// Decode the token payload without verifying the signature so we can
+		// surface the embedded expiry even when the token is tampered or
+		// expired — this narrows down timing vs. secret issues.
+		diagFields := logrus.Fields{"token_err_type": classifyCallbackTokenError(err)}
+		if expiry, decodeErr := decodeCallbackTokenExpiry(token); decodeErr == nil {
+			diagFields["token_embedded_expiry"] = expiry.UTC().Format(time.RFC3339)
+			diagFields["token_expired_by_seconds"] = int(now.Sub(expiry).Seconds())
+		}
+		logger.WithError(err).WithFields(diagFields).Warn("[callback diag] token rejected")
 		httpx.Error(c, http.StatusUnauthorized, 40100, err.Error())
 		return
 	}
@@ -209,12 +228,40 @@ func (h Handler) Callback(c *gin.Context) {
 		httpx.Error(c, http.StatusBadRequest, 40000, err.Error())
 		return
 	}
-	if err := h.store.ReceiveCallback(c.Request.Context(), traceID, tokenHash, payload, time.Now().UTC()); err != nil {
-		logger.WithError(err).Warn("plugin callback receive failed")
+	// Mirror Python: logger.info("[plugin callback]token=({}),body={}")
+	logger.WithFields(logrus.Fields{
+		"token": shortHash(token),
+		"body":  jsonCompact(store.JSONMap(payload)),
+	}).Info("[plugin callback] received")
+	if err := h.store.ReceiveCallback(c.Request.Context(), traceID, tokenHash, payload, now); err != nil {
+		// ReceiveCallback returns ErrRecordNotFound when its multi-condition
+		// WHERE matched 0 rows. Fetch the schedule to pinpoint which condition
+		// failed so operators do not have to guess.
+		diagFields := logrus.Fields{"receive_error": err.Error()}
+		if s, getErr := h.store.Get(c.Request.Context(), traceID); getErr != nil {
+			diagFields["diag_schedule_found"] = false
+			diagFields["diag_get_error"] = getErr.Error()
+		} else {
+			diagFields["diag_schedule_found"] = true
+			diagFields["diag_state"] = s.State
+			diagFields["diag_state_is_callback"] = s.State == constants.StateCallback
+			diagFields["diag_finished"] = s.FinishedAt != nil
+			diagFields["diag_token_hash_match"] = s.CallbackTokenHash == tokenHash
+			diagFields["diag_already_received"] = s.CallbackReceivedAt != nil
+			if s.CallbackExpiresAt != nil {
+				diagFields["diag_callback_expires_at"] = s.CallbackExpiresAt.UTC().Format(time.RFC3339)
+				diagFields["diag_callback_expired"] = !s.CallbackExpiresAt.After(now)
+				diagFields["diag_expired_by_seconds"] = int(now.Sub(*s.CallbackExpiresAt).Seconds())
+			} else {
+				diagFields["diag_callback_expires_at"] = "null"
+				diagFields["diag_callback_expired"] = false
+			}
+		}
+		logger.WithFields(diagFields).Warn("[callback diag] ReceiveCallback matched 0 rows")
 		httpx.Error(c, http.StatusNotFound, 40404, err.Error())
 		return
 	}
-	logger.Info("plugin callback received")
+	logger.Info("plugin callback stored successfully")
 	httpx.OK(c, gin.H{"trace_id": traceID, "state": constants.StateCallback})
 }
 
@@ -293,4 +340,59 @@ func shortHash(value string) string {
 		return value
 	}
 	return value[:12]
+}
+
+// jsonCompact serialises v to a compact JSON string for log fields.
+// On failure it returns the error string so logs are never silently empty.
+func jsonCompact(v interface{}) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "<marshal error: " + err.Error() + ">"
+	}
+	return string(b)
+}
+
+// classifyCallbackTokenError maps a token verification error to a short category
+// string so operators can tell "expired" from "tampered" at a glance.
+func classifyCallbackTokenError(err error) string {
+	if err == nil {
+		return "none"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "expired"):
+		return "expired"
+	case strings.Contains(msg, "signature"):
+		return "invalid_signature"
+	case strings.Contains(msg, "payload"):
+		return "invalid_payload"
+	default:
+		return "invalid_format"
+	}
+}
+
+// decodeCallbackTokenExpiry decodes the expiry timestamp embedded in a callback
+// token's base64 payload WITHOUT verifying the HMAC signature. This is
+// intentionally insecure — used only for diagnostic logging once a token is
+// already known to be rejected.
+//
+// Token format: base64RawURL(traceID|expiresUnix|nonce).hmac
+func decodeCallbackTokenExpiry(token string) (time.Time, error) {
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return time.Time{}, fmt.Errorf("not a two-part token")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return time.Time{}, err
+	}
+	fields := strings.Split(string(raw), "|")
+	if len(fields) != 3 {
+		return time.Time{}, fmt.Errorf("payload has %d fields", len(fields))
+	}
+	unixTs, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(unixTs, 0), nil
 }

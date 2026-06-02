@@ -28,8 +28,8 @@ from the PaaS preRelease/postCompile hook.`,
 			return apigwsync.FetchPublicKey(context.Background(), apiName, destPath, logrus.StandardLogger())
 		},
 	}
-	cmd.Flags().StringVar(&apiName, "name", "", "APIGW gateway name (defaults to env BK_APIGW_NAME / BKPAAS_APP_ID)")
-	cmd.Flags().StringVar(&destPath, "out", "apigw.pub", "Destination file path for the public key")
+	cmd.Flags().StringVar(&apiName, "name", "", "APIGW gateway name (defaults to env BKPAAS_BK_PLUGIN_APIGW_NAME / BK_APIGW_NAME / BKPAAS_APP_ID)")
+	cmd.Flags().StringVar(&destPath, "out", "bin/apigw.pub", "Destination file path for the public key (Python framework convention)")
 
 	rootCmd.AddCommand(cmd)
 }

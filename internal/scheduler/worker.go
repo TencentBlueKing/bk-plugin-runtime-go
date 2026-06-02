@@ -91,7 +91,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 
 		logger.Info("[schedule] prepare reader and runtime")
 		reader := runtimeadapter.Reader{Inputs: item.Inputs, ContextInputs: item.ContextInputs, CallbackData: item.CallbackData}
-		rt := runtimeadapter.NewExecuteRuntime(ctx, w.cfg.Store, invokeCount)
+		rt := runtimeadapter.NewExecuteRuntime(ctx, w.cfg.Store, invokeCount, logger)
 
 		logger.Info("[schedule] run execute")
 		if err := executor.ScheduleWithState(item.TraceID, item.PluginVersion, invokeCount, item.State, reader, rt, logger); err != nil {
