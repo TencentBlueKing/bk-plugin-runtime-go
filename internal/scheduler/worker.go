@@ -80,20 +80,21 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 			"callback_received": item.CallbackReceivedAt != nil,
 		}).Info("[schedule] run task")
 
-		// When running a CALLBACK-state schedule, log the payload the third-party
-		// system sent so operators can tell immediately whether result/data fields
-		// matched plugin expectations (e.g. "callback result is false" root cause).
+		// When running a CALLBACK-state schedule, the third-party payload helps
+		// tell whether result/data fields matched plugin expectations (e.g.
+		// "callback result is false" root cause). It is verbose / potentially
+		// sensitive, so keep it at DEBUG.
 		if item.State == constants.StateCallback && item.CallbackReceivedAt != nil {
 			logger.WithFields(logrus.Fields{
 				"callback_data": item.CallbackData,
-			}).Info("[schedule] callback data snapshot")
+			}).Debug("[schedule] callback data snapshot")
 		}
 
-		logger.Info("[schedule] prepare reader and runtime")
+		logger.Debug("[schedule] prepare reader and runtime")
 		reader := runtimeadapter.Reader{Inputs: item.Inputs, ContextInputs: item.ContextInputs, CallbackData: item.CallbackData}
 		rt := runtimeadapter.NewExecuteRuntime(ctx, w.cfg.Store, invokeCount, logger)
 
-		logger.Info("[schedule] run execute")
+		logger.Debug("[schedule] run execute")
 		if err := executor.ScheduleWithState(item.TraceID, item.PluginVersion, invokeCount, item.State, reader, rt, logger); err != nil {
 			logger.WithError(err).Error("[schedule] plugin execute error")
 		}

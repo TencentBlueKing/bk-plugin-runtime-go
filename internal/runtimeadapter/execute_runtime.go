@@ -73,6 +73,8 @@ func (r *ExecuteRuntime) PrepareCallback(traceID string, version string, invokeC
 		return runtime.CallbackPreparation{}, err
 	}
 	r.preparedCallback = prepared
+	// Intermediate step (URL minted); the durable state is logged at INFO in
+	// SetCallback, so keep this one at DEBUG to avoid duplicate INFO lines.
 	r.logger.WithFields(logrus.Fields{
 		"trace_id":                 traceID,
 		"plugin_version":           version,
@@ -81,7 +83,7 @@ func (r *ExecuteRuntime) PrepareCallback(traceID string, version string, invokeC
 		"callback_token_hash":      shortTokenHash(prepared.tokenHash),
 		"callback_expires_at":      prepared.expiresAt.UTC().Format(time.RFC3339),
 		"callback_url_set":         prepared.preparation.URL != "",
-	}).Info("plugin callback prepared")
+	}).Debug("plugin callback prepared")
 	return prepared.preparation, nil
 }
 

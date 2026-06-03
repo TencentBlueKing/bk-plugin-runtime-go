@@ -105,10 +105,13 @@ func (h Handler) Invoke(c *gin.Context) {
 		"request_base_url":        requestBase,
 		"finish_callback_enabled": pluginCallbackInfo.URL != "",
 	})
+	logger.Info("plugin invoke request accepted")
+	// Full request payload may contain sensitive business data and is verbose;
+	// keep it at DEBUG so it is only emitted when troubleshooting (LOG_LEVEL=debug).
 	logger.WithFields(logrus.Fields{
 		"context_inputs": jsonCompact(req.Context),
 		"req_json":       jsonCompact(req.Inputs),
-	}).Info("plugin invoke request accepted")
+	}).Debug("plugin invoke request payload")
 	schedule := &store.Schedule{
 		TraceID:            traceID,
 		PluginVersion:      versionCode,
@@ -209,15 +212,17 @@ func (h Handler) Callback(c *gin.Context) {
 	}
 	traceID, err := manager.Verify(token)
 	if err != nil {
-		// Decode the token payload without verifying the signature so we can
-		// surface the embedded expiry even when the token is tampered or
-		// expired — this narrows down timing vs. secret issues.
-		diagFields := logrus.Fields{"token_err_type": classifyCallbackTokenError(err)}
-		if expiry, decodeErr := decodeCallbackTokenExpiry(token); decodeErr == nil {
-			diagFields["token_embedded_expiry"] = expiry.UTC().Format(time.RFC3339)
-			diagFields["token_expired_by_seconds"] = int(now.Sub(expiry).Seconds())
+		logger.WithError(err).WithField("token_err_type", classifyCallbackTokenError(err)).Warn("plugin callback token rejected")
+		// Deep token diagnostics (embedded expiry, timing) are only useful when
+		// actively troubleshooting and are kept at DEBUG to avoid extra work.
+		if logger.Logger.IsLevelEnabled(logrus.DebugLevel) {
+			diagFields := logrus.Fields{}
+			if expiry, decodeErr := decodeCallbackTokenExpiry(token); decodeErr == nil {
+				diagFields["token_embedded_expiry"] = expiry.UTC().Format(time.RFC3339)
+				diagFields["token_expired_by_seconds"] = int(now.Sub(expiry).Seconds())
+			}
+			logger.WithError(err).WithFields(diagFields).Debug("[callback diag] token rejected detail")
 		}
-		logger.WithError(err).WithFields(diagFields).Warn("[callback diag] token rejected")
 		httpx.Error(c, http.StatusUnauthorized, 40100, err.Error())
 		return
 	}
@@ -228,40 +233,44 @@ func (h Handler) Callback(c *gin.Context) {
 		httpx.Error(c, http.StatusBadRequest, 40000, err.Error())
 		return
 	}
-	// Mirror Python: logger.info("[plugin callback]token=({}),body={}")
+	// Full third-party payload may contain sensitive data and is verbose; keep
+	// it at DEBUG (mirrors Python's "[plugin callback]token=(),body=" log).
 	logger.WithFields(logrus.Fields{
 		"token": shortHash(token),
 		"body":  jsonCompact(store.JSONMap(payload)),
-	}).Info("[plugin callback] received")
+	}).Debug("[plugin callback] payload received")
 	if err := h.store.ReceiveCallback(c.Request.Context(), traceID, tokenHash, payload, now); err != nil {
+		logger.WithError(err).Warn("plugin callback receive failed")
 		// ReceiveCallback returns ErrRecordNotFound when its multi-condition
-		// WHERE matched 0 rows. Fetch the schedule to pinpoint which condition
-		// failed so operators do not have to guess.
-		diagFields := logrus.Fields{"receive_error": err.Error()}
-		if s, getErr := h.store.Get(c.Request.Context(), traceID); getErr != nil {
-			diagFields["diag_schedule_found"] = false
-			diagFields["diag_get_error"] = getErr.Error()
-		} else {
-			diagFields["diag_schedule_found"] = true
-			diagFields["diag_state"] = s.State
-			diagFields["diag_state_is_callback"] = s.State == constants.StateCallback
-			diagFields["diag_finished"] = s.FinishedAt != nil
-			diagFields["diag_token_hash_match"] = s.CallbackTokenHash == tokenHash
-			diagFields["diag_already_received"] = s.CallbackReceivedAt != nil
-			if s.CallbackExpiresAt != nil {
-				diagFields["diag_callback_expires_at"] = s.CallbackExpiresAt.UTC().Format(time.RFC3339)
-				diagFields["diag_callback_expired"] = !s.CallbackExpiresAt.After(now)
-				diagFields["diag_expired_by_seconds"] = int(now.Sub(*s.CallbackExpiresAt).Seconds())
+		// WHERE matched 0 rows. The per-condition breakdown is troubleshooting
+		// detail (and costs an extra query), so emit it only at DEBUG.
+		if logger.Logger.IsLevelEnabled(logrus.DebugLevel) {
+			diagFields := logrus.Fields{"receive_error": err.Error()}
+			if s, getErr := h.store.Get(c.Request.Context(), traceID); getErr != nil {
+				diagFields["diag_schedule_found"] = false
+				diagFields["diag_get_error"] = getErr.Error()
 			} else {
-				diagFields["diag_callback_expires_at"] = "null"
-				diagFields["diag_callback_expired"] = false
+				diagFields["diag_schedule_found"] = true
+				diagFields["diag_state"] = s.State
+				diagFields["diag_state_is_callback"] = s.State == constants.StateCallback
+				diagFields["diag_finished"] = s.FinishedAt != nil
+				diagFields["diag_token_hash_match"] = s.CallbackTokenHash == tokenHash
+				diagFields["diag_already_received"] = s.CallbackReceivedAt != nil
+				if s.CallbackExpiresAt != nil {
+					diagFields["diag_callback_expires_at"] = s.CallbackExpiresAt.UTC().Format(time.RFC3339)
+					diagFields["diag_callback_expired"] = !s.CallbackExpiresAt.After(now)
+					diagFields["diag_expired_by_seconds"] = int(now.Sub(*s.CallbackExpiresAt).Seconds())
+				} else {
+					diagFields["diag_callback_expires_at"] = "null"
+					diagFields["diag_callback_expired"] = false
+				}
 			}
+			logger.WithFields(diagFields).Debug("[callback diag] ReceiveCallback matched 0 rows")
 		}
-		logger.WithFields(diagFields).Warn("[callback diag] ReceiveCallback matched 0 rows")
 		httpx.Error(c, http.StatusNotFound, 40404, err.Error())
 		return
 	}
-	logger.Info("plugin callback stored successfully")
+	logger.Info("plugin callback received")
 	httpx.OK(c, gin.H{"trace_id": traceID, "state": constants.StateCallback})
 }
 
