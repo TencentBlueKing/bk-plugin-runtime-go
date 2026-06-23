@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -240,6 +241,15 @@ func (h Handler) Callback(c *gin.Context) {
 		"body":  jsonCompact(store.JSONMap(payload)),
 	}).Debug("[plugin callback] payload received")
 	if err := h.store.ReceiveCallback(c.Request.Context(), traceID, tokenHash, payload, now); err != nil {
+		// A retried / duplicate callback for a still-pending trace is expected
+		// (third-party systems commonly retry). Treat it as an idempotent
+		// success instead of an error so the caller stops retrying, and avoid
+		// re-triggering the callback step.
+		if errors.Is(err, store.ErrCallbackAlreadyReceived) {
+			logger.Info("plugin callback already received, ignoring duplicate")
+			httpx.OK(c, gin.H{"trace_id": traceID, "state": constants.StateCallback})
+			return
+		}
 		logger.WithError(err).Warn("plugin callback receive failed")
 		// ReceiveCallback returns ErrRecordNotFound when its multi-condition
 		// WHERE matched 0 rows. The per-condition breakdown is troubleshooting

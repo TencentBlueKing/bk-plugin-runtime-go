@@ -61,3 +61,36 @@ func TestWorkerRunsDuePollTask(t *testing.T) {
 	require.Equal(t, constants.StateSuccess, got.State)
 	require.Equal(t, store.JSONMap{"done": true, "count": float64(2)}, got.Outputs)
 }
+
+func TestWorkerExpiresStuckCallback(t *testing.T) {
+	ctx := context.Background()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	s := store.NewGormStore(db)
+	require.NoError(t, s.AutoMigrate(ctx))
+
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+	require.NoError(t, s.Create(ctx, &store.Schedule{
+		TraceID:           "stuck-callback",
+		PluginVersion:     "9.9.2",
+		State:             constants.StateCallback,
+		InvokeCount:       1,
+		CallbackExpiresAt: &past,
+	}))
+
+	worker := NewWorker(Config{
+		Store:    s,
+		WorkerID: "test-worker",
+		Limit:    10,
+		LockFor:  time.Minute,
+		Logger:   logrus.NewEntry(logrus.StandardLogger()),
+	})
+	require.NoError(t, worker.RunOnce(ctx))
+
+	got, err := s.Get(ctx, "stuck-callback")
+	require.NoError(t, err)
+	require.Equal(t, constants.StateFail, got.State)
+	require.Equal(t, "CALLBACK_TIMEOUT", got.ErrorCode)
+	require.NotNil(t, got.FinishedAt)
+}

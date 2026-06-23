@@ -146,6 +146,106 @@ func TestGormStoreClaimDueMergesPollAndCallbackByDueTime(t *testing.T) {
 	require.Equal(t, "callback-due", claimed[1].TraceID)
 }
 
+func TestGormStoreReceiveCallbackIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Hour)
+
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "cb", PluginVersion: "1.0.0", State: constants.StateCallback, InvokeCount: 1}))
+	require.NoError(t, s.MarkCallback(ctx, "cb", 1, "hash", expiresAt, "/bk_plugin/callback/token"))
+
+	// First callback wins.
+	require.NoError(t, s.ReceiveCallback(ctx, "cb", "hash", JSONMap{"n": float64(1)}, now))
+
+	// A worker claims it and holds the lock while executing.
+	claimed, err := s.ClaimDue(ctx, now, "worker-a", 5, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+
+	// A retried / duplicate callback arriving mid-run must be idempotent: it
+	// must not reset the schedule, overwrite callback_data, or clear the lock.
+	dupErr := s.ReceiveCallback(ctx, "cb", "hash", JSONMap{"n": float64(2)}, now.Add(time.Second))
+	require.ErrorIs(t, dupErr, ErrCallbackAlreadyReceived)
+
+	got, err := s.Get(ctx, "cb")
+	require.NoError(t, err)
+	require.Equal(t, "worker-a", got.LockedBy)
+	require.NotNil(t, got.LockedUntil)
+	require.Equal(t, JSONMap{"n": float64(1)}, got.CallbackData)
+}
+
+func TestGormStoreReceiveCallbackRejectsUnknownToken(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "cb", PluginVersion: "1.0.0", State: constants.StateCallback, InvokeCount: 1}))
+	require.NoError(t, s.MarkCallback(ctx, "cb", 1, "hash", now.Add(time.Hour), "/cb"))
+
+	err := s.ReceiveCallback(ctx, "cb", "wrong-hash", JSONMap{}, now)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+func TestGormStoreExpireCallbacksFailsTimedOut(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+	received := now.Add(-time.Minute)
+
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "expired", PluginVersion: "1.0.0", State: constants.StateCallback, InvokeCount: 1, CallbackExpiresAt: &past}))
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "received", PluginVersion: "1.0.0", State: constants.StateCallback, InvokeCount: 1, CallbackExpiresAt: &past, CallbackReceivedAt: &received}))
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "pending", PluginVersion: "1.0.0", State: constants.StateCallback, InvokeCount: 1, CallbackExpiresAt: &future}))
+
+	failed, err := s.ExpireCallbacks(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, failed, 1)
+	require.Equal(t, "expired", failed[0].TraceID)
+	require.Equal(t, constants.StateFail, failed[0].State)
+	require.Equal(t, "CALLBACK_TIMEOUT", failed[0].ErrorCode)
+	require.NotNil(t, failed[0].FinishedAt)
+
+	pending, err := s.Get(ctx, "pending")
+	require.NoError(t, err)
+	require.Equal(t, constants.StateCallback, pending.State)
+
+	stillReceived, err := s.Get(ctx, "received")
+	require.NoError(t, err)
+	require.Equal(t, constants.StateCallback, stillReceived.State)
+}
+
+func TestGormStoreRenewLock(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+
+	require.NoError(t, s.Create(ctx, &Schedule{TraceID: "lk", PluginVersion: "1.0.0", State: constants.StatePoll, InvokeCount: 1, NextRunAt: now.Add(-time.Second)}))
+	claimed, err := s.ClaimDue(ctx, now, "worker-a", 5, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+
+	newLease := now.Add(10 * time.Minute)
+	ok, err := s.RenewLock(ctx, "lk", "worker-a", newLease)
+	require.NoError(t, err)
+	require.True(t, ok)
+	got, err := s.Get(ctx, "lk")
+	require.NoError(t, err)
+	require.WithinDuration(t, newLease, *got.LockedUntil, time.Second)
+
+	// A worker that does not own the lock cannot renew it.
+	ok, err = s.RenewLock(ctx, "lk", "worker-b", now.Add(time.Hour))
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// Once finished the lock is gone and cannot be renewed.
+	require.NoError(t, s.MarkSuccess(ctx, "lk", 2))
+	ok, err = s.RenewLock(ctx, "lk", "worker-a", now.Add(time.Hour))
+	require.NoError(t, err)
+	require.False(t, ok)
+}
+
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }

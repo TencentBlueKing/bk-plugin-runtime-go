@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"time"
 
@@ -9,6 +10,11 @@ import (
 
 	"github.com/TencentBlueKing/bk-plugin-framework-go/constants"
 )
+
+// ErrCallbackAlreadyReceived is returned by ReceiveCallback when a callback for
+// the trace was already accepted. It lets the caller treat a duplicate /
+// retried third-party callback as an idempotent success instead of an error.
+var ErrCallbackAlreadyReceived = errors.New("callback already received")
 
 type GormStore struct {
 	db *gorm.DB
@@ -84,27 +90,122 @@ func (s *GormStore) MarkCallback(ctx context.Context, traceID string, invokeCoun
 	}).Error
 }
 
+// ReceiveCallback records the first third-party callback for a trace and makes
+// the schedule due for the worker. The "callback_received_at IS NULL" guard
+// ensures only the first callback wins: duplicate / retried callbacks (very
+// common from third-party systems) must not reset next_run_at, overwrite
+// callback_data, or clear a lock currently held by a running worker, which
+// would otherwise cause the callback step to be executed more than once.
+//
+// A duplicate callback for a still-pending trace returns ErrCallbackAlreadyReceived
+// so callers can respond idempotently; genuinely invalid/expired/finished
+// callbacks return gorm.ErrRecordNotFound.
 func (s *GormStore) ReceiveCallback(ctx context.Context, traceID string, tokenHash string, data JSONMap, now time.Time) error {
 	result := s.db.WithContext(ctx).Model(&Schedule{}).
 		Where("trace_id = ?", traceID).
 		Where("callback_token_hash = ?", tokenHash).
 		Where("state = ?", constants.StateCallback).
+		Where("callback_received_at IS NULL").
 		Where("finished_at IS NULL").
 		Where("callback_expires_at IS NULL OR callback_expires_at > ?", now).
 		Updates(map[string]interface{}{
 			"callback_data":        data,
 			"callback_received_at": &now,
 			"next_run_at":          now,
-			"locked_by":            "",
-			"locked_until":         nil,
 		})
 	if result.Error != nil {
 		return result.Error
 	}
-	if result.RowsAffected == 0 {
+	if result.RowsAffected == 1 {
+		return nil
+	}
+
+	// No row updated: distinguish an idempotent duplicate (same token already
+	// accepted and not yet finished) from a genuinely invalid/expired callback.
+	var existing Schedule
+	if err := s.db.WithContext(ctx).
+		Where("trace_id = ?", traceID).
+		Where("callback_token_hash = ?", tokenHash).
+		First(&existing).Error; err != nil {
 		return gorm.ErrRecordNotFound
 	}
-	return nil
+	if existing.State == constants.StateCallback && existing.CallbackReceivedAt != nil && existing.FinishedAt == nil {
+		return ErrCallbackAlreadyReceived
+	}
+	return gorm.ErrRecordNotFound
+}
+
+// ExpireCallbacks fails CALLBACK schedules whose callback never arrived before
+// the configured timeout, so a missing third-party callback does not leave the
+// plugin stuck in WAITING_CALLBACK forever. It returns the schedules it
+// actually transitioned to FAIL so the caller can fire finish callbacks.
+//
+// The "callback_received_at IS NULL" guard on the conditional update means a
+// late callback racing in between the select and the update wins, and rows
+// currently being processed by a worker (which always have a non-null
+// callback_received_at) are never touched here.
+func (s *GormStore) ExpireCallbacks(ctx context.Context, now time.Time, limit int) ([]Schedule, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	var candidates []Schedule
+	if err := s.db.WithContext(ctx).
+		Where("state = ?", constants.StateCallback).
+		Where("callback_received_at IS NULL").
+		Where("callback_expires_at IS NOT NULL").
+		Where("callback_expires_at < ?", now).
+		Where("finished_at IS NULL").
+		Order("callback_expires_at ASC").
+		Limit(limit).
+		Find(&candidates).Error; err != nil {
+		return nil, err
+	}
+
+	failed := make([]Schedule, 0, len(candidates))
+	for i := range candidates {
+		result := s.db.WithContext(ctx).Model(&Schedule{}).
+			Where("trace_id = ?", candidates[i].TraceID).
+			Where("state = ?", constants.StateCallback).
+			Where("callback_received_at IS NULL").
+			Where("finished_at IS NULL").
+			Updates(map[string]interface{}{
+				"state":         constants.StateFail,
+				"error_code":    "CALLBACK_TIMEOUT",
+				"error_message": "callback was not received before timeout",
+				"finished_at":   &now,
+				"locked_by":     "",
+				"locked_until":  nil,
+			})
+		if result.Error != nil {
+			return nil, result.Error
+		}
+		if result.RowsAffected != 1 {
+			continue
+		}
+		updated, err := s.Get(ctx, candidates[i].TraceID)
+		if err != nil {
+			return nil, err
+		}
+		failed = append(failed, *updated)
+	}
+	return failed, nil
+}
+
+// RenewLock extends the lock lease for a schedule still owned by workerID. It
+// is used as a heartbeat while a step executes so that a long-running step does
+// not let its lock expire and get re-claimed (and thus re-executed) by another
+// worker. Returns false when the lock is no longer held (e.g. the schedule
+// already finished or was taken over).
+func (s *GormStore) RenewLock(ctx context.Context, traceID string, workerID string, lockUntil time.Time) (bool, error) {
+	result := s.db.WithContext(ctx).Model(&Schedule{}).
+		Where("trace_id = ?", traceID).
+		Where("locked_by = ?", workerID).
+		Where("finished_at IS NULL").
+		Updates(map[string]interface{}{"locked_until": &lockUntil})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
 }
 
 func (s *GormStore) MarkSuccess(ctx context.Context, traceID string, invokeCount int) error {
