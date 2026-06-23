@@ -50,4 +50,6 @@ type ScheduleStore interface {
 	MarkSuccess(ctx context.Context, traceID string, invokeCount int) error
 	MarkFail(ctx context.Context, traceID string, invokeCount int, message string) error
 	ClaimDue(ctx context.Context, now time.Time, workerID string, limit int, lockFor time.Duration) ([]Schedule, error)
+	ExpireCallbacks(ctx context.Context, now time.Time, limit int) ([]Schedule, error)
+	RenewLock(ctx context.Context, traceID string, workerID string, lockUntil time.Time) (bool, error)
 }
