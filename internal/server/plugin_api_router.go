@@ -10,11 +10,25 @@ import (
 )
 
 type ginPluginAPIRouter struct {
-	group gin.IRouter
+	group      gin.IRouter
+	registered map[string]struct{}
 }
 
 func (r ginPluginAPIRouter) Handle(method string, path string, handler http.HandlerFunc) {
-	r.group.Handle(method, normalizePluginAPIPath(path), func(c *gin.Context) {
+	normalizedPath := normalizePluginAPIPath(path)
+	r.handle(method, normalizedPath, handler)
+	if alternatePath := alternatePluginAPIPath(normalizedPath); alternatePath != "" {
+		r.handle(method, alternatePath, handler)
+	}
+}
+
+func (r ginPluginAPIRouter) handle(method string, path string, handler http.HandlerFunc) {
+	key := method + " " + path
+	if _, ok := r.registered[key]; ok {
+		return
+	}
+	r.registered[key] = struct{}{}
+	r.group.Handle(method, path, func(c *gin.Context) {
 		handler.ServeHTTP(c.Writer, pluginapi.WithParams(c.Request, ginParams(c.Params)))
 	})
 }
@@ -35,6 +49,16 @@ func normalizePluginAPIPath(path string) string {
 		return path
 	}
 	return "/" + path
+}
+
+func alternatePluginAPIPath(path string) string {
+	if path == "/" {
+		return ""
+	}
+	if strings.HasSuffix(path, "/") {
+		return strings.TrimRight(path, "/")
+	}
+	return path + "/"
 }
 
 func ginParams(params gin.Params) map[string]string {
