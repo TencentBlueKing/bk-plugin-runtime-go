@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +19,7 @@ import (
 )
 
 const pluginAPIPrefix = "/bk_plugin/plugin_api/"
+const maxPluginAPIMultipartMemory = 32 << 20
 
 type pluginAPIDispatchRequest struct {
 	URL        string        `json:"url"`
@@ -24,6 +27,13 @@ type pluginAPIDispatchRequest struct {
 	Username   string        `json:"username"`
 	Data       store.JSONMap `json:"data"`
 	DumpedData string        `json:"dumped_data"`
+	Files      []pluginAPIDispatchFile
+}
+
+type pluginAPIDispatchFile struct {
+	FieldName string
+	FileName  string
+	Content   []byte
 }
 
 func (h Handler) PluginAPIDispatch(c *gin.Context) {
@@ -32,8 +42,8 @@ func (h Handler) PluginAPIDispatch(c *gin.Context) {
 		return
 	}
 
-	var req pluginAPIDispatchRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	req, err := bindPluginAPIDispatchRequest(c)
+	if err != nil {
 		httpx.Error(c, http.StatusBadRequest, 40000, err.Error())
 		return
 	}
@@ -56,6 +66,63 @@ func (h Handler) PluginAPIDispatch(c *gin.Context) {
 	}
 
 	writePluginAPIResponse(c, rec)
+}
+
+func bindPluginAPIDispatchRequest(c *gin.Context) (pluginAPIDispatchRequest, error) {
+	if strings.HasPrefix(c.GetHeader("Content-Type"), "multipart/form-data") {
+		return parseMultipartPluginAPIDispatchRequest(c.Request)
+	}
+
+	var req pluginAPIDispatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return pluginAPIDispatchRequest{}, err
+	}
+	return req, nil
+}
+
+func parseMultipartPluginAPIDispatchRequest(r *http.Request) (pluginAPIDispatchRequest, error) {
+	if err := r.ParseMultipartForm(maxPluginAPIMultipartMemory); err != nil {
+		return pluginAPIDispatchRequest{}, err
+	}
+
+	req := pluginAPIDispatchRequest{
+		URL:        r.FormValue("url"),
+		Method:     r.FormValue("method"),
+		Username:   r.FormValue("username"),
+		DumpedData: r.FormValue("dumped_data"),
+		Data:       store.JSONMap{},
+	}
+	if rawData := r.FormValue("data"); rawData != "" {
+		if err := json.Unmarshal([]byte(rawData), &req.Data); err != nil {
+			return pluginAPIDispatchRequest{}, err
+		}
+	}
+	if r.MultipartForm == nil {
+		return req, nil
+	}
+	for fieldName, headers := range r.MultipartForm.File {
+		for _, header := range headers {
+			content, err := readMultipartFile(header)
+			if err != nil {
+				return pluginAPIDispatchRequest{}, err
+			}
+			req.Files = append(req.Files, pluginAPIDispatchFile{
+				FieldName: fieldName,
+				FileName:  header.Filename,
+				Content:   content,
+			})
+		}
+	}
+	return req, nil
+}
+
+func readMultipartFile(header *multipart.FileHeader) ([]byte, error) {
+	file, err := header.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(file)
 }
 
 func (r *pluginAPIDispatchRequest) normalize() error {
@@ -100,6 +167,19 @@ func (r pluginAPIDispatchRequest) toHTTPRequest(c *gin.Context) (*http.Request, 
 		}
 		target.RawQuery = query.Encode()
 		body = bytes.NewReader(nil)
+	} else if len(r.Files) > 0 {
+		payload, contentType, err := r.multipartBody()
+		if err != nil {
+			return nil, err
+		}
+		req := httptest.NewRequest(r.Method, target.String(), payload)
+		req = req.WithContext(c.Request.Context())
+		copyPluginAPIRequestHeaders(req, c.Request.Header)
+		req.Header.Set("Content-Type", contentType)
+		if r.Username != "" {
+			req.Header.Set(auth.HeaderOperator, r.Username)
+		}
+		return req, nil
 	} else {
 		payload, err := json.Marshal(r.Data)
 		if err != nil {
@@ -110,11 +190,7 @@ func (r pluginAPIDispatchRequest) toHTTPRequest(c *gin.Context) (*http.Request, 
 
 	req := httptest.NewRequest(r.Method, target.String(), body)
 	req = req.WithContext(c.Request.Context())
-	for key, values := range c.Request.Header {
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
-	}
+	copyPluginAPIRequestHeaders(req, c.Request.Header)
 	if r.Method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -122,6 +198,61 @@ func (r pluginAPIDispatchRequest) toHTTPRequest(c *gin.Context) (*http.Request, 
 		req.Header.Set(auth.HeaderOperator, r.Username)
 	}
 	return req, nil
+}
+
+func (r pluginAPIDispatchRequest) multipartBody() (*bytes.Buffer, string, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range r.Data {
+		if err := writer.WriteField(key, pluginAPIFormFieldValue(value)); err != nil {
+			return nil, "", err
+		}
+	}
+	if r.DumpedData != "" {
+		if _, ok := r.Data["dumped_data"]; !ok {
+			if err := writer.WriteField("dumped_data", r.DumpedData); err != nil {
+				return nil, "", err
+			}
+		}
+	}
+	for _, file := range r.Files {
+		part, err := writer.CreateFormFile(file.FieldName, file.FileName)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, err := part.Write(file.Content); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", err
+	}
+	return &body, writer.FormDataContentType(), nil
+}
+
+func pluginAPIFormFieldValue(value interface{}) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	case map[string]interface{}, []interface{}, store.JSONMap:
+		raw, err := json.Marshal(v)
+		if err == nil {
+			return string(raw)
+		}
+	}
+	return fmt.Sprint(value)
+}
+
+func copyPluginAPIRequestHeaders(req *http.Request, headers http.Header) {
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 }
 
 func writePluginAPIResponse(c *gin.Context, rec *httptest.ResponseRecorder) {

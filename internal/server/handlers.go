@@ -41,6 +41,8 @@ type invokeRequest struct {
 	Context store.JSONMap `json:"context"`
 }
 
+const legacyScheduleTimeFormat = "2006-01-02 15:04:05"
+
 func (h Handler) Meta(c *gin.Context) {
 	opts := hub.GetOptions()
 	httpx.OK(c, protocol.BuildMeta(protocol.MetaOptions{
@@ -142,10 +144,21 @@ func (h Handler) Invoke(c *gin.Context) {
 	if err != nil {
 		logger.WithError(err).WithField("state", constants.StateFail).Error("plugin invoke execute failed")
 		_ = h.store.MarkFail(c.Request.Context(), traceID, 1, err.Error())
+		outputs := store.JSONMap{}
 		if saved, getErr := h.store.Get(c.Request.Context(), traceID); getErr == nil {
+			outputs = saved.Outputs
 			go h.notifyFinish(context.Background(), saved)
 		}
-		httpx.OK(c, gin.H{"trace_id": traceID, "state": constants.StateFail})
+		httpx.OKWithTrace(c, traceID, gin.H{
+			"trace_id": traceID,
+			"state":    constants.StateFail,
+			"outputs":  outputs,
+			"err":      err.Error(),
+			"error": gin.H{
+				"code":    "PLUGIN_EXECUTE_ERROR",
+				"message": err.Error(),
+			},
+		})
 		return
 	}
 	if state == constants.StateSuccess {
@@ -166,7 +179,13 @@ func (h Handler) Invoke(c *gin.Context) {
 		"callback_url_set":  saved.CallbackURL != "",
 		"callback_url_host": callbackURLHost(saved.CallbackURL),
 	}).Info("plugin invoke response ready")
-	httpx.OK(c, gin.H{"trace_id": traceID, "state": saved.State, "outputs": saved.Outputs, "callback_url": saved.CallbackURL})
+	httpx.OKWithTrace(c, traceID, gin.H{
+		"trace_id":     traceID,
+		"state":        saved.State,
+		"outputs":      saved.Outputs,
+		"err":          saved.ErrorMessage,
+		"callback_url": saved.CallbackURL,
+	})
 }
 
 func (h Handler) Schedule(c *gin.Context) {
@@ -184,16 +203,36 @@ func (h Handler) Schedule(c *gin.Context) {
 		"callback_received": schedule.CallbackReceivedAt != nil,
 		"finished":          schedule.FinishedAt != nil,
 	}).Info("plugin schedule queried")
+	createdAt := formatLegacyScheduleTime(schedule.CreatedAt)
 	httpx.OK(c, gin.H{
-		"trace_id": schedule.TraceID,
-		"version":  schedule.PluginVersion,
-		"state":    schedule.State,
-		"outputs":  schedule.Outputs,
+		"trace_id":       schedule.TraceID,
+		"version":        schedule.PluginVersion,
+		"plugin_version": schedule.PluginVersion,
+		"state":          schedule.State,
+		"outputs":        schedule.Outputs,
+		"err":            schedule.ErrorMessage,
+		"create_at":      createdAt,
+		"created_at":     createdAt,
+		"finish_at":      formatLegacyScheduleTimePtr(schedule.FinishedAt),
 		"error": gin.H{
 			"code":    schedule.ErrorCode,
 			"message": schedule.ErrorMessage,
 		},
 	})
+}
+
+func formatLegacyScheduleTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(legacyScheduleTimeFormat)
+}
+
+func formatLegacyScheduleTimePtr(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return formatLegacyScheduleTime(*t)
 }
 
 func (h Handler) Callback(c *gin.Context) {

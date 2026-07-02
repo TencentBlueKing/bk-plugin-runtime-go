@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,6 +36,9 @@ func (p testPlugin) Execute(ctx *kit.Context) error {
 	}
 	if err := ctx.ReadInputs(&inputs); err != nil {
 		return err
+	}
+	if inputs.Mode == "fail" {
+		return errors.New("state fail")
 	}
 	if inputs.Mode == "callback" && ctx.InvokeCount() == 1 {
 		preparation, err := ctx.PrepareCallback(time.Minute)
@@ -204,22 +208,88 @@ func TestInvokeSyncAndScheduleRead(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/bk_plugin/invoke/9.9.1", body)
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"err":`)
 
 	var payload struct {
-		Data struct {
+		TraceID string `json:"trace_id"`
+		Data    struct {
 			TraceID string `json:"trace_id"`
 			State   int    `json:"state"`
+			Err     string `json:"err"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
 	require.NotEmpty(t, payload.Data.TraceID)
+	require.Equal(t, payload.Data.TraceID, payload.TraceID)
 	require.Equal(t, 4, payload.Data.State)
+	require.Empty(t, payload.Data.Err)
 
 	schedule := httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/bk_plugin/schedule/"+payload.Data.TraceID, nil)
 	router.ServeHTTP(schedule, req)
 	require.Equal(t, http.StatusOK, schedule.Code)
 	require.Contains(t, schedule.Body.String(), `"mode":"sync"`)
+	require.Contains(t, schedule.Body.String(), `"created_at":`)
+	var schedulePayload struct {
+		Data struct {
+			PluginVersion string `json:"plugin_version"`
+			CreateAt      string `json:"create_at"`
+			FinishAt      string `json:"finish_at"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(schedule.Body.Bytes(), &schedulePayload))
+	require.Equal(t, "9.9.1", schedulePayload.Data.PluginVersion)
+	require.NotEmpty(t, schedulePayload.Data.CreateAt)
+	require.NotEmpty(t, schedulePayload.Data.FinishAt)
+}
+
+func TestInvokeFailIncludesErrForSOPSCompatibility(t *testing.T) {
+	router, _ := newTestRouter(t)
+
+	body := bytes.NewBufferString(`{"inputs":{"mode":"fail"},"context":{}}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bk_plugin/invoke/9.9.1", body)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var payload struct {
+		TraceID string `json:"trace_id"`
+		Data    struct {
+			TraceID string          `json:"trace_id"`
+			State   constants.State `json:"state"`
+			Err     string          `json:"err"`
+			Outputs store.JSONMap   `json:"outputs"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	require.NotEmpty(t, payload.Data.TraceID)
+	require.Equal(t, payload.Data.TraceID, payload.TraceID)
+	require.Equal(t, constants.StateFail, payload.Data.State)
+	require.Equal(t, "state fail", payload.Data.Err)
+	require.Empty(t, payload.Data.Outputs)
+
+	schedule := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/bk_plugin/schedule/"+payload.Data.TraceID, nil)
+	router.ServeHTTP(schedule, req)
+	require.Equal(t, http.StatusOK, schedule.Code)
+
+	var schedulePayload struct {
+		Data struct {
+			State    constants.State `json:"state"`
+			Err      string          `json:"err"`
+			CreateAt string          `json:"create_at"`
+			FinishAt string          `json:"finish_at"`
+			Error    struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(schedule.Body.Bytes(), &schedulePayload))
+	require.Equal(t, constants.StateFail, schedulePayload.Data.State)
+	require.Equal(t, "state fail", schedulePayload.Data.Err)
+	require.NotEmpty(t, schedulePayload.Data.CreateAt)
+	require.NotEmpty(t, schedulePayload.Data.FinishAt)
+	require.Equal(t, "state fail", schedulePayload.Data.Error.Message)
 }
 
 func TestInvokePreparedCallbackUsesRequestBaseURL(t *testing.T) {
