@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -104,6 +106,57 @@ func TestPluginAPIDispatch(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), `"username":"alice"`)
 	require.Contains(t, rec.Body.String(), `"value":1`)
+}
+
+func TestPluginAPIDispatchForwardsMultipartFiles(t *testing.T) {
+	pluginapi.ResetForTest()
+	t.Cleanup(pluginapi.ResetForTest)
+	pluginapi.Register(func(router pluginapi.Router) {
+		router.POST("/upload", func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, r.ParseMultipartForm(32<<20))
+			file, header, err := r.FormFile("cert")
+			require.NoError(t, err)
+			defer file.Close()
+			content, err := io.ReadAll(file)
+			require.NoError(t, err)
+
+			w.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
+				"username":  r.Header.Get(auth.HeaderOperator),
+				"vendor":    r.FormValue("vendor"),
+				"bk_biz_id": r.FormValue("bk_biz_id"),
+				"filename":  header.Filename,
+				"content":   string(content),
+			}))
+		})
+	})
+
+	router, _ := newTestRouter(t)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("url", "/bk_plugin/plugin_api/upload"))
+	require.NoError(t, writer.WriteField("method", "post"))
+	require.NoError(t, writer.WriteField("username", "alice"))
+	require.NoError(t, writer.WriteField("dumped_data", `{"vendor":"tcloud","bk_biz_id":213}`))
+	part, err := writer.CreateFormFile("cert", "cert.txt")
+	require.NoError(t, err)
+	_, err = part.Write([]byte("cert-content"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bk_plugin/plugin_api_dispatch", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{
+		"username": "alice",
+		"vendor": "tcloud",
+		"bk_biz_id": "213",
+		"filename": "cert.txt",
+		"content": "cert-content"
+	}`, rec.Body.String())
 }
 
 func TestPluginAPIDispatchForwardsPathParams(t *testing.T) {
