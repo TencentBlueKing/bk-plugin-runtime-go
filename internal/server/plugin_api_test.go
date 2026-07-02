@@ -14,6 +14,68 @@ import (
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/store"
 )
 
+func TestPluginAPIDispatchPassesThroughPluginAPIResponse(t *testing.T) {
+	pluginapi.ResetForTest()
+	t.Cleanup(pluginapi.ResetForTest)
+	pluginapi.Register(func(router pluginapi.Router) {
+		router.GET("/accounts/list", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
+				"result":  true,
+				"message": "success",
+				"data": []map[string]string{
+					{"label": "ziyan-hcm-test", "value": "0000002b"},
+				},
+			}))
+		})
+	})
+
+	router, _ := newTestRouter(t)
+	body := bytes.NewBufferString(`{
+		"url": "/bk_plugin/plugin_api/accounts/list?vendor=tcloud-ziyan",
+		"method": "get",
+		"username": "alice"
+	}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bk_plugin/plugin_api_dispatch", body)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	require.JSONEq(t, `{
+		"result": true,
+		"message": "success",
+		"data": [{"label": "ziyan-hcm-test", "value": "0000002b"}]
+	}`, rec.Body.String())
+}
+
+func TestPluginAPIDispatchMatchesTrailingSlashVariant(t *testing.T) {
+	pluginapi.ResetForTest()
+	t.Cleanup(pluginapi.ResetForTest)
+	pluginapi.Register(func(router pluginapi.Router) {
+		router.GET("/accounts/list", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]string{
+				"vendor":    r.URL.Query().Get("vendor"),
+				"bk_biz_id": r.URL.Query().Get("bk_biz_id"),
+			}))
+		})
+	})
+
+	router, _ := newTestRouter(t)
+	body := bytes.NewBufferString(`{
+		"url": "/bk_plugin/plugin_api/accounts/list/?bk_biz_id=213&vendor=tcloud-ziyan",
+		"method": "get",
+		"username": "alice"
+	}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bk_plugin/plugin_api_dispatch", body)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"vendor":"tcloud-ziyan","bk_biz_id":"213"}`, rec.Body.String())
+}
+
 func TestPluginAPIDispatch(t *testing.T) {
 	pluginapi.ResetForTest()
 	t.Cleanup(pluginapi.ResetForTest)

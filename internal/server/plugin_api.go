@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/auth"
 	"github.com/TencentBlueKing/bk-plugin-runtime-go/internal/httpx"
@@ -56,11 +55,7 @@ func (h Handler) PluginAPIDispatch(c *gin.Context) {
 		return
 	}
 
-	traceID := auth.RequestID(c.Request)
-	if traceID == "" {
-		traceID = uuid.NewString()
-	}
-	httpx.OK(c, gin.H{"trace_id": traceID, "data": decodePluginAPIResponse(rec.Body.Bytes())})
+	writePluginAPIResponse(c, rec)
 }
 
 func (r *pluginAPIDispatchRequest) normalize() error {
@@ -129,14 +124,15 @@ func (r pluginAPIDispatchRequest) toHTTPRequest(c *gin.Context) (*http.Request, 
 	return req, nil
 }
 
-func decodePluginAPIResponse(raw []byte) interface{} {
-	if len(raw) == 0 {
-		return store.JSONMap{}
+func writePluginAPIResponse(c *gin.Context, rec *httptest.ResponseRecorder) {
+	for key, values := range rec.Header() {
+		for _, value := range values {
+			c.Writer.Header().Add(key, value)
+		}
 	}
-
-	var data interface{}
-	if err := json.Unmarshal(raw, &data); err != nil {
-		return string(raw)
+	c.Status(rec.Code)
+	if rec.Body.Len() == 0 {
+		return
 	}
-	return data
+	_, _ = c.Writer.Write(rec.Body.Bytes())
 }

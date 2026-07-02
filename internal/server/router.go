@@ -29,7 +29,10 @@ func NewRouter(cfg Config) *gin.Engine {
 	group.POST("/callback/:token", h.Callback)
 	group.POST("/plugin_api_dispatch", h.RequireScope(), h.PluginAPIDispatch)
 	pluginAPIGroup := group.Group("/plugin_api", h.RequireScope())
-	pluginAPIRouter := ginPluginAPIRouter{group: pluginAPIGroup}
+	pluginAPIRouter := ginPluginAPIRouter{
+		group:      pluginAPIGroup,
+		registered: map[string]struct{}{},
+	}
 	for _, registrar := range pluginapi.Registrars() {
 		registrar(pluginAPIRouter)
 	}
