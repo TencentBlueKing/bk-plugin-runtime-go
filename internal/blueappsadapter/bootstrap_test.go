@@ -4,11 +4,34 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/TencentBlueKing/blueapps-go/pkg/config"
 )
+
+type mysqlPoolConfigRecorder struct {
+	maxLifetime time.Duration
+	maxIdleTime time.Duration
+}
+
+func (r *mysqlPoolConfigRecorder) SetConnMaxLifetime(d time.Duration) {
+	r.maxLifetime = d
+}
+
+func (r *mysqlPoolConfigRecorder) SetConnMaxIdleTime(d time.Duration) {
+	r.maxIdleTime = d
+}
+
+func TestConfigureMysqlPool(t *testing.T) {
+	recorder := &mysqlPoolConfigRecorder{}
+
+	configureMysqlPool(recorder)
+
+	require.Equal(t, 3*time.Minute, recorder.maxLifetime)
+	require.Equal(t, 30*time.Second, recorder.maxIdleTime)
+}
 
 func TestPrepareBlueappsEnvAliasesLegacyMysqlEnv(t *testing.T) {
 	cleanEnv(t, "MYSQL_HOST", "MYSQL_PORT", "MYSQL_NAME", "MYSQL_USER", "MYSQL_PASSWORD")

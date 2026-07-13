@@ -18,6 +18,16 @@ import (
 	log "github.com/TencentBlueKing/blueapps-go/pkg/logging"
 )
 
+const (
+	mysqlConnMaxLifetime = 3 * time.Minute
+	mysqlConnMaxIdleTime = 30 * time.Second
+)
+
+type mysqlPoolConfigurer interface {
+	SetConnMaxLifetime(time.Duration)
+	SetConnMaxIdleTime(time.Duration)
+}
+
 func LoadAndInit(ctx context.Context, cfgFile string) (*config.Config, error) {
 	if err := prepareBlueappsEnv(); err != nil {
 		return nil, err
@@ -39,11 +49,21 @@ func LoadAndInit(ctx context.Context, cfgFile string) (*config.Config, error) {
 		)
 	}
 	database.InitDBClient(ctx, cfg.Platform.Addons.Mysql, log.GetLogger("gorm"))
+	sqlDB, err := database.Client(ctx).DB()
+	if err != nil {
+		return nil, errors.Wrap(err, "get underlying sql db")
+	}
+	configureMysqlPool(sqlDB)
 	if cfg.Platform.Addons.Redis != nil {
 		redis.InitRedisClient(ctx, cfg.Platform.Addons.Redis)
 	}
 	memory.InitCache(cfg.Service.MemoryCacheSize)
 	return cfg, nil
+}
+
+func configureMysqlPool(pool mysqlPoolConfigurer) {
+	pool.SetConnMaxLifetime(mysqlConnMaxLifetime)
+	pool.SetConnMaxIdleTime(mysqlConnMaxIdleTime)
 }
 
 func prepareBlueappsEnv() error {
