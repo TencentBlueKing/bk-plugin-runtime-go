@@ -233,6 +233,14 @@ runtime 使用 [logrus](https://github.com/sirupsen/logrus) 输出结构化 JSON
 
 详见 [docs/migration/beego-runtime-to-runtime-go.md](docs/migration/beego-runtime-to-runtime-go.md)。
 
+如果旧 runtime 中仍有未完成的 MySQL schedule 任务，请先停止旧 web/worker，再使用新二进制显式迁移：
+
+```bash
+./plugin migrate-beego-schedules
+```
+
+该命令不会随 server/worker 自动执行，可幂等重跑，并且不会覆盖新 runtime 已经推进过的同一 `trace_id`。旧环境使用 Redis 保存 schedule 时不适用该命令。
+
 最小改动只需修改 `main.go` 的 import：
 
 ```diff
