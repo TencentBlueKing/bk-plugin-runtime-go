@@ -354,7 +354,7 @@ func setSOPSHeaders(req *http.Request) {
 	req.Header.Set(auth.HeaderAppCode, "bk_sops")
 	req.Header.Set(auth.HeaderOperator, "admin")
 	req.Header.Set(auth.HeaderRequestID, "req-sops-e2e")
-	req.Header.Set(auth.HeaderTenantID, "system")
+	req.Header.Set("X-Bk-Tenant-Id", "system")
 	req.Header.Set(auth.HeaderScopeType, "project")
 	req.Header.Set(auth.HeaderScopeValue, "42")
 }
