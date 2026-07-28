@@ -12,7 +12,8 @@ const (
 	HeaderOperator    = "X-Bkapi-Username"
 	HeaderOperatorAlt = "X-Bkapi-User-Name"
 	HeaderRequestID   = "X-Bkapi-Request-Id"
-	HeaderTenantID    = "X-Bkapi-Tenant-Id"
+	HeaderTenantID    = "X-Bk-Tenant-Id"
+	HeaderTenantIDAlt = "X-Bkapi-Tenant-Id"
 	HeaderScopeType   = "Bkplugin-Scope-Type"
 	HeaderScopeValue  = "Bkplugin-Scope-Value"
 )
@@ -45,7 +46,7 @@ func RequestID(r *http.Request) string {
 }
 
 func TenantID(r *http.Request) string {
-	return r.Header.Get(HeaderTenantID)
+	return firstHeader(r, HeaderTenantID, HeaderTenantIDAlt)
 }
 
 func firstHeader(r *http.Request, keys ...string) string {

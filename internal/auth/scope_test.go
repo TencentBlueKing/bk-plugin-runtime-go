@@ -25,3 +25,25 @@ func TestAllowRequestScopeRules(t *testing.T) {
 	req.Header.Set(HeaderScopeValue, "3")
 	require.False(t, AllowRequest(req, scope))
 }
+
+func TestTenantIDReadsStandardHeader(t *testing.T) {
+	req := httptest.NewRequest("POST", "/bk_plugin/invoke/1.0.0", nil)
+	req.Header.Set("X-Bk-Tenant-Id", "tenant-standard")
+
+	require.Equal(t, "tenant-standard", TenantID(req))
+}
+
+func TestTenantIDPrefersStandardHeader(t *testing.T) {
+	req := httptest.NewRequest("POST", "/bk_plugin/invoke/1.0.0", nil)
+	req.Header.Set("X-Bk-Tenant-Id", "tenant-standard")
+	req.Header.Set("X-Bkapi-Tenant-Id", "tenant-legacy")
+
+	require.Equal(t, "tenant-standard", TenantID(req))
+}
+
+func TestTenantIDSupportsLegacyHeader(t *testing.T) {
+	req := httptest.NewRequest("POST", "/bk_plugin/invoke/1.0.0", nil)
+	req.Header.Set("X-Bkapi-Tenant-Id", "tenant-legacy")
+
+	require.Equal(t, "tenant-legacy", TenantID(req))
+}

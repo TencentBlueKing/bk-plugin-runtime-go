@@ -87,8 +87,9 @@ func TestPluginAPIDispatch(t *testing.T) {
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
 			w.Header().Set("Content-Type", "application/json")
 			require.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
-				"username": r.Header.Get(auth.HeaderOperator),
-				"payload":  payload,
+				"username":  r.Header.Get(auth.HeaderOperator),
+				"tenant_id": r.Header.Get("X-Bk-Tenant-Id"),
+				"payload":   payload,
 			}))
 		})
 	})
@@ -102,9 +103,11 @@ func TestPluginAPIDispatch(t *testing.T) {
 	}`)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/bk_plugin/plugin_api_dispatch", body)
+	req.Header.Set("X-Bk-Tenant-Id", "tenant-standard")
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), `"username":"alice"`)
+	require.Contains(t, rec.Body.String(), `"tenant_id":"tenant-standard"`)
 	require.Contains(t, rec.Body.String(), `"value":1`)
 }
 
