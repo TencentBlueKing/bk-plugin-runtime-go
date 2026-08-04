@@ -34,7 +34,7 @@ hub.MustInstall(MyPlugin{}, ContextInputs{}, Outputs{}, inputsForm)
 添加新的 runtime module：
 
 ```bash
-go get github.com/TencentBlueKing/bk-plugin-runtime-go@v0.1.2
+go get github.com/TencentBlueKing/bk-plugin-runtime-go@v0.2.9
 go mod tidy
 ```
 
@@ -60,6 +60,51 @@ Phase 1 runtime 支持这些命令：
 - `fetch-apigw-public-key`：拉取网关 RSA 公钥并写入本地文件，供运行时校验 `X-Bkapi-JWT`。
 - `collectstatics`：兼容旧命令，在新 runtime 中是 no-op。
 - `version`：输出 runtime 版本。
+- `migrate-beego-schedules`：手动把旧 MySQL `schedule` 表迁移到新 runtime 的 `schedules` 表；server/worker 启动时不会自动执行。
+
+## 迁移执行中的 schedule 任务
+
+旧 `beego-runtime` 使用单数表 `schedule` 和 Machinery 调度任务，新 runtime 使用 GORM 复数表 `schedules` 并由 worker 扫描 `next_run_at`。如果升级时还有 `finished = false` 的旧轮询任务，必须在启动新 worker 前手动执行迁移命令。
+
+推荐切换顺序：
+
+1. 停止接收新的 invoke 请求，并停止旧 `beego-runtime` 的 web、worker 进程，避免迁移期间旧数据继续变化或同一任务被新旧 worker 重复执行。
+2. 备份 MySQL 数据库。
+3. 使用新 runtime 构建出的插件二进制执行：
+
+   ```bash
+   ./plugin migrate-beego-schedules
+   ```
+
+   命令读取与 server/worker 相同的 MySQL 环境变量；使用配置文件时可传 `--conf <path>`，大表可通过 `--batch-size <n>` 调整每批事务行数。
+4. 检查命令输出中的 `scanned`、`migrated`、`skipped` 和 `resumable`：
+
+   ```text
+   legacy schedule migration complete: scanned=12 migrated=12 skipped=0 resumable=2
+   ```
+
+   `resumable` 表示检测到的未完成 POLL 记录数。迁移会为这些任务设置立即到期的 `next_run_at`，新 worker 启动后会从原来的 `invoke_count`、inputs、context inputs、context store 和 outputs 继续执行。
+5. 启动新 runtime 的 server、worker，并通过原 `trace_id` 检查 `/bk_plugin/schedule/:trace_id`，确认任务进入最终状态。
+
+迁移命令具有以下安全边界：
+
+- **不会自动执行**：`server`、`worker` 以及无参数默认启动 server 的路径都不会调用该命令。
+- **可幂等重跑**：目标表已存在相同 `trace_id` 时只计入 `skipped`，不会覆盖。这可以防止新 worker 已经把任务推进为 SUCCESS 后，重跑命令又将其恢复成旧 POLL 状态。
+- **保留旧表**：命令只向 `schedules` 写入，不修改或删除 `schedule`，方便必要时核对和回滚。
+- **按批次提交**：任一批次中的 JSON 无法解析时，该批不会写入；修正数据后可重新执行。
+- **仅覆盖旧 MySQL 存储**：如果旧环境设置了 `STORE_BACKEND=redis`，任务状态不在 `schedule` 表中，此命令无法迁移，必须先排空旧任务或另行迁移 Redis 数据。
+- **必须保留在途任务对应的插件版本**：新包仍需注册旧记录中的 `plugin_version`；如果升级时同时删除或破坏性修改该版本，worker 无法按原逻辑继续执行。
+
+主要字段映射如下：
+
+| beego-runtime | bk-plugin-runtime-go |
+| --- | --- |
+| `trace_i_d` | `trace_id` |
+| `context_store` | `context_data` |
+| `error` | `error_message`，并设置 legacy error code |
+| `create_at` | `created_at` |
+| `finished` + `finish_at` | `finished_at` |
+| 未完成 POLL 任务 | `next_run_at` 设置为迁移时间，等待新 worker 领取 |
 
 ## 网关同步
 

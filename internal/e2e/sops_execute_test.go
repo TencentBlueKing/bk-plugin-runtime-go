@@ -27,9 +27,10 @@ import (
 )
 
 const (
-	sopsSyncVersion     = "10.0.0"
-	sopsPollVersion     = "10.0.1"
-	sopsCallbackVersion = "10.0.2"
+	sopsSyncVersion            = "10.0.0"
+	sopsPollVersion            = "10.0.1"
+	sopsCallbackVersion        = "10.0.2"
+	sopsLegacyMigrationVersion = "10.0.3"
 )
 
 var installSOPSE2EPluginsOnce sync.Once
@@ -94,6 +95,34 @@ func (p sopsCallbackPlugin) Execute(ctx *kit.Context) error {
 		return fmt.Errorf("sops callback result is false")
 	}
 	return writeSOPSOutputs(ctx, inputs, callbackPayload.Data.JobID)
+}
+
+type sopsLegacyMigrationPlugin struct{}
+
+func (p sopsLegacyMigrationPlugin) Version() string { return sopsLegacyMigrationVersion }
+func (p sopsLegacyMigrationPlugin) Desc() string    { return "sops legacy migration e2e plugin" }
+func (p sopsLegacyMigrationPlugin) Execute(ctx *kit.Context) error {
+	inputs, err := readSOPSInputs(ctx)
+	if err != nil {
+		return err
+	}
+	if ctx.InvokeCount() == 1 {
+		if err := ctx.Write(map[string]interface{}{"job_id": "legacy-job-001"}); err != nil {
+			return err
+		}
+		ctx.WaitPoll(time.Minute)
+		return nil
+	}
+	var checkpoint struct {
+		JobID string `json:"job_id"`
+	}
+	if err := ctx.Read(&checkpoint); err != nil {
+		return err
+	}
+	if checkpoint.JobID == "" {
+		return fmt.Errorf("legacy checkpoint job_id is empty")
+	}
+	return writeSOPSOutputs(ctx, inputs, checkpoint.JobID)
 }
 
 func TestSOPSInvokeSyncPluginFlow(t *testing.T) {
@@ -167,6 +196,79 @@ func TestSOPSInvokeCallbackPluginFlow(t *testing.T) {
 	requireFinishCallback(t, finishCallback.C, "sops-callback-plugin")
 }
 
+func TestMigrateBeegoScheduleWhileTaskIsPollingAndResumeInNewWorker(t *testing.T) {
+	ctx := context.Background()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`CREATE TABLE schedule (
+		trace_i_d TEXT PRIMARY KEY,
+		plugin_version TEXT NOT NULL,
+		state INTEGER NOT NULL,
+		invoke_count INTEGER NOT NULL,
+		inputs TEXT NOT NULL,
+		context_inputs TEXT NOT NULL,
+		context_store TEXT NOT NULL,
+		outputs TEXT NOT NULL,
+		error TEXT NULL,
+		create_at DATETIME NOT NULL,
+		finished BOOLEAN NOT NULL,
+		finish_at DATETIME NULL
+	)`).Error)
+	traceID := "legacy-in-flight-trace"
+	require.NoError(t, db.Exec(`INSERT INTO schedule (
+		trace_i_d, plugin_version, state, invoke_count, inputs, context_inputs,
+		context_store, outputs, create_at, finished
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		traceID,
+		sopsLegacyMigrationVersion,
+		constants.StatePoll,
+		1,
+		`{"template_id":1001,"task_name":"sops-legacy-migration-plugin"}`,
+		`{"bk_biz_id":42}`,
+		`{"job_id":"legacy-job-001"}`,
+		`{"progress":50}`,
+		time.Date(2026, 7, 15, 8, 0, 0, 0, time.UTC),
+		false,
+	).Error)
+
+	migrationTime := time.Now().UTC().Add(-time.Second)
+	report, err := store.MigrateLegacySchedules(ctx, db, store.LegacyScheduleMigrationOptions{
+		ReferenceTime: migrationTime,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), report.Migrated)
+	require.Equal(t, int64(1), report.Resumable)
+
+	env := newSOPSE2EEnvWithDB(t, db)
+	waitingSchedule := getScheduleFromSOPS(t, env.Router, traceID)
+	require.Equal(t, constants.StatePoll, waitingSchedule.State)
+	require.Equal(t, float64(50), waitingSchedule.Outputs["progress"])
+	migrated, err := env.Store.Get(ctx, traceID)
+	require.NoError(t, err)
+	require.Equal(t, store.JSONMap{"job_id": "legacy-job-001"}, migrated.ContextData)
+
+	runWorkerOnce(t, ctx, env.Store)
+
+	finalSchedule := getScheduleFromSOPS(t, env.Router, traceID)
+	require.Equal(t, constants.StateSuccess, finalSchedule.State)
+	require.Equal(t, "legacy-job-001", finalSchedule.Outputs["job_id"])
+	require.Equal(t, float64(2), finalSchedule.Outputs["invoke_count"])
+	finished, err := env.Store.Get(ctx, traceID)
+	require.NoError(t, err)
+	require.Equal(t, 2, finished.InvokeCount)
+	require.NotNil(t, finished.FinishedAt)
+
+	// Re-running the command after the new worker completed the task must skip
+	// the old POLL row instead of reverting the new SUCCESS state.
+	report, err = store.MigrateLegacySchedules(ctx, db, store.LegacyScheduleMigrationOptions{})
+	require.NoError(t, err)
+	require.Equal(t, int64(0), report.Migrated)
+	require.Equal(t, int64(1), report.Skipped)
+	finished, err = env.Store.Get(ctx, traceID)
+	require.NoError(t, err)
+	require.Equal(t, constants.StateSuccess, finished.State)
+}
+
 func readSOPSInputs(ctx *kit.Context) (sopsInputs, error) {
 	var inputs sopsInputs
 	return inputs, ctx.ReadInputs(&inputs)
@@ -195,6 +297,7 @@ func installSOPSE2EPlugins() {
 	hub.MustInstallV2(sopsSyncPlugin{}, spec)
 	hub.MustInstallV2(sopsPollPlugin{}, spec)
 	hub.MustInstallV2(sopsCallbackPlugin{}, spec)
+	hub.MustInstallV2(sopsLegacyMigrationPlugin{}, spec)
 }
 
 type sopsE2EEnv struct {
@@ -203,6 +306,13 @@ type sopsE2EEnv struct {
 }
 
 func newSOPSE2EEnv(t *testing.T) sopsE2EEnv {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	return newSOPSE2EEnvWithDB(t, db)
+}
+
+func newSOPSE2EEnvWithDB(t *testing.T, db *gorm.DB) sopsE2EEnv {
 	t.Helper()
 	t.Setenv("BK_PLUGIN_CALLBACK_TOKEN_SECRET", "test-callback-secret")
 	gin.SetMode(gin.TestMode)
@@ -217,8 +327,6 @@ func newSOPSE2EEnv(t *testing.T) sopsE2EEnv {
 	})
 	installSOPSE2EPluginsOnce.Do(installSOPSE2EPlugins)
 
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
 	s := store.NewGormStore(db)
 	require.NoError(t, s.AutoMigrate(context.Background()))
 	return sopsE2EEnv{
